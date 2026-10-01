@@ -2,10 +2,15 @@
 -- DeliverExpress - 10_datos_prueba.sql
 -- Integrante 1 (+ 3)
 -- Datos de prueba: usuarios reales del cliente (20 restaurantes, 35
--- repartidores, 3 coordinadores, 50 clientes), tasas BCV, ~500 pedidos
--- historicos de los ultimos 60 dias (con historial, ofertas, calificaciones
--- y facturas), facturas de comision, liquidaciones, un par de notas de
--- credito, y ~10 pedidos activos para la demo. roadmap_bd.txt seccion 11.
+-- repartidores, 3 coordinadores -- cifras reales segun el PDF del proyecto,
+-- no se tocan -- y 67 clientes, un tercio mas de los 50 del contrato
+-- original), tasas BCV, ~667 pedidos historicos de los ultimos 60 dias (un
+-- tercio mas de los ~500 iniciales) con historial, ofertas, calificaciones
+-- y facturas, facturas de comision, liquidaciones, un par de notas de
+-- credito, y ~10 pedidos activos para la demo. Nombres, direcciones y menus
+-- generados con variedad real (nombres venezolanos, calles y sectores de
+-- Puerto Ordaz) en vez de placeholders tipo "Cliente 1". roadmap_bd.txt
+-- seccion 11.
 --
 -- NOTA: este script genera datos ALEATORIOS dentro de reglas de negocio
 -- validas. Si al ejecutarlo aparece algun error, revisenlo entre los dos:
@@ -26,13 +31,30 @@ END $$;
 -- Coordinadores (3)
 DO $$
 DECLARE
+    v_nombres    TEXT[] := ARRAY[
+        'María José','Carlos','Ana','Luis','Carmen','José','Gabriela','Pedro','Rosa','Miguel',
+        'Daniela','Francisco','Valentina','Jesús','Andrea','Rafael','Camila','Antonio','Mariana',
+        'Eduardo','Isabella','Ricardo','Fernanda','Alejandro','Victoria','Manuel','Paola','Diego',
+        'Stephanie','Jorge','Yolimar','Deisy','Néstor','Yusneidy','Argenis'
+    ];
+    v_apellidos  TEXT[] := ARRAY[
+        'González','Rodríguez','Pérez','Martínez','Hernández','López','García','Sánchez','Ramírez',
+        'Torres','Flores','Rivas','Gómez','Díaz','Morales','Castillo','Jiménez','Ortiz','Silva',
+        'Romero','Suárez','Rojas','Medina','Vargas','Delgado','Mendoza','Pacheco','Guerrero',
+        'Marcano','Blanco'
+    ];
     v_id_usuario INT;
     i INT;
 BEGIN
     FOR i IN 1..3 LOOP
         v_id_usuario := fn_registrar_usuario('coord' || lpad(i::text, 2, '0') || '@demo.com', 'demo1234', 'coordinador');
         INSERT INTO coordinador (id_usuario, nombre, telefono)
-        VALUES (v_id_usuario, 'Coordinador ' || i, '0412-' || (1000000 + i)::text);
+        VALUES (
+            v_id_usuario,
+            v_nombres[((i - 1) % array_length(v_nombres, 1)) + 1] || ' ' ||
+            v_apellidos[((i * 7 - 1) % array_length(v_apellidos, 1)) + 1],
+            '0412-' || lpad(floor(random() * 10000000)::TEXT, 7, '0')
+        );
     END LOOP;
 END $$;
 
@@ -47,9 +69,21 @@ DECLARE
         'Rollos y Sushi Bar','El Buen Pollo','Postres La Reposteria'
     ];
     v_platos TEXT[] := ARRAY[
-        'Pabellon criollo','Arepa sencilla','Pizza margarita','Pizza pepperoni','Parrilla mixta',
-        'Pollo asado a la brasa','Combo de sushi variado','Rollos california','Hamburguesa clasica',
-        'Perro caliente especial','Pan casero','Agua mineral','Torta de chocolate','Quesillo','Ensalada cesar'
+        'Pabellon criollo','Arepa sencilla','Arepa reina pepiada','Arepa dominó','Pizza margarita',
+        'Pizza pepperoni','Pizza hawaiana','Pizza cuatro quesos','Parrilla mixta','Punta trasera a la parrilla',
+        'Pollo asado a la brasa','Pollo a la broaster','Combo de sushi variado','Rollos california',
+        'Rollos philadelphia','Hamburguesa clasica','Hamburguesa doble queso','Perro caliente especial',
+        'Pan casero','Pan de jamon','Agua mineral','Jugo natural','Torta de chocolate','Quesillo',
+        'Torta tres leches','Ensalada cesar','Tequenos'
+    ];
+    v_calles TEXT[] := ARRAY[
+        'Calle Chile','Calle Cuba','Calle Peru','Calle Brasil','Av. Guayana','Av. Atlantico',
+        'Av. Las Americas','Carrera Tumeremo','Calle Caroni','Calle Orinoco','Av. Fuerzas Armadas',
+        'Calle Upata','Calle Icabaru','Av. Libertador','Calle Yocoima'
+    ];
+    v_lugares TEXT[] := ARRAY[
+        'C.C. Orinoco','C.C. Dorado Mall','C.C. Alta Vista','Res. Las Acacias','Res. Orinoco',
+        'Edif. Guayana','C.C. Frontier','Res. El Roble','Plaza Las Americas','Edif. Caroni'
     ];
     v_zona_centro    RECORD;
     v_id_usuario     INT;
@@ -60,16 +94,21 @@ DECLARE
     v_num_productos  INT;
     v_precio         NUMERIC;
     v_nombre_prod    TEXT;
+    v_direccion      TEXT;
     i INT;
     j INT;
     v_dia INT;
 BEGIN
     FOR i IN 1..20 LOOP
-        SELECT id_zona, latitud_centro, longitud_centro INTO v_zona_centro
+        SELECT id_zona, nombre, latitud_centro, longitud_centro INTO v_zona_centro
         FROM zona ORDER BY random() LIMIT 1;
 
         v_lat := v_zona_centro.latitud_centro + (random() - 0.5) * 0.01;
         v_lon := v_zona_centro.longitud_centro + (random() - 0.5) * 0.01;
+
+        v_direccion := v_calles[((i - 1) % array_length(v_calles, 1)) + 1] || ', ' ||
+                       v_lugares[((i * 3 - 1) % array_length(v_lugares, 1)) + 1] || ', ' ||
+                       v_zona_centro.nombre || ', Puerto Ordaz';
 
         v_id_usuario := fn_registrar_usuario('rest' || lpad(i::text, 2, '0') || '@demo.com', 'demo1234', 'restaurante');
 
@@ -78,11 +117,11 @@ BEGIN
             tiempo_prep_min, rif, razon_social, direccion_fiscal
         ) VALUES (
             v_id_usuario, ((i - 1) % 8) + 1, v_nombres[i],
-            'Av. Principal, sector cercano, Puerto Ordaz', '0412-' || (5000000 + i)::text,
+            v_direccion, '0412-' || lpad(floor(random() * 10000000)::TEXT, 7, '0'),
             v_lat, v_lon, 15 + (i % 5) * 5,
             'J-' || lpad((30000000 + i)::text, 8, '0') || '-' || (i % 10)::text,
             v_nombres[i] || ' C.A.',
-            'Av. Principal, sector cercano, Puerto Ordaz, estado Bolivar'
+            v_direccion || ', estado Bolivar'
         )
         RETURNING id_restaurante INTO v_id_restaurante;
 
@@ -113,6 +152,18 @@ END $$;
 -- Repartidores (35), repartidos en las 8 zonas, con ubicacion inicial
 DO $$
 DECLARE
+    v_nombres    TEXT[] := ARRAY[
+        'María José','Carlos','Ana','Luis','Carmen','José','Gabriela','Pedro','Rosa','Miguel',
+        'Daniela','Francisco','Valentina','Jesús','Andrea','Rafael','Camila','Antonio','Mariana',
+        'Eduardo','Isabella','Ricardo','Fernanda','Alejandro','Victoria','Manuel','Paola','Diego',
+        'Stephanie','Jorge','Yolimar','Deisy','Néstor','Yusneidy','Argenis'
+    ];
+    v_apellidos  TEXT[] := ARRAY[
+        'González','Rodríguez','Pérez','Martínez','Hernández','López','García','Sánchez','Ramírez',
+        'Torres','Flores','Rivas','Gómez','Díaz','Morales','Castillo','Jiménez','Ortiz','Silva',
+        'Romero','Suárez','Rojas','Medina','Vargas','Delgado','Mendoza','Pacheco','Guerrero',
+        'Marcano','Blanco'
+    ];
     v_zonas        INT[];
     v_id_zona      INT;
     v_id_usuario   INT;
@@ -140,15 +191,47 @@ BEGIN
             id_usuario, id_zona, nombre, telefono, cedula, tipo_vehiculo,
             disponibilidad, latitud_actual, longitud_actual, ubicacion_actualizada_en
         ) VALUES (
-            v_id_usuario, v_id_zona, 'Repartidor ' || i, '0414-' || (6000000 + i)::text,
+            v_id_usuario, v_id_zona,
+            v_nombres[((i - 1) % array_length(v_nombres, 1)) + 1] || ' ' ||
+            v_apellidos[((i * 7 - 1) % array_length(v_apellidos, 1)) + 1],
+            '0414-' || lpad(floor(random() * 10000000)::TEXT, 7, '0'),
             'V-' || (10000000 + i)::text, v_vehiculo, 'libre', v_lat, v_lon, now()
         );
     END LOOP;
 END $$;
 
--- Clientes (50), 1 o 2 direcciones cada uno, mitad con cedula_rif
+-- Clientes (67: los 50 originales del contrato + un tercio mas), 1 o 2
+-- direcciones cada uno, mitad con cedula_rif
 DO $$
 DECLARE
+    v_nombres    TEXT[] := ARRAY[
+        'María José','Carlos','Ana','Luis','Carmen','José','Gabriela','Pedro','Rosa','Miguel',
+        'Daniela','Francisco','Valentina','Jesús','Andrea','Rafael','Camila','Antonio','Mariana',
+        'Eduardo','Isabella','Ricardo','Fernanda','Alejandro','Victoria','Manuel','Paola','Diego',
+        'Stephanie','Jorge','Yolimar','Deisy','Néstor','Yusneidy','Argenis'
+    ];
+    v_apellidos  TEXT[] := ARRAY[
+        'González','Rodríguez','Pérez','Martínez','Hernández','López','García','Sánchez','Ramírez',
+        'Torres','Flores','Rivas','Gómez','Díaz','Morales','Castillo','Jiménez','Ortiz','Silva',
+        'Romero','Suárez','Rojas','Medina','Vargas','Delgado','Mendoza','Pacheco','Guerrero',
+        'Marcano','Blanco'
+    ];
+    v_calles TEXT[] := ARRAY[
+        'Calle Chile','Calle Cuba','Calle Peru','Calle Brasil','Av. Guayana','Av. Atlantico',
+        'Av. Las Americas','Carrera Tumeremo','Calle Caroni','Calle Orinoco','Av. Fuerzas Armadas',
+        'Calle Upata','Calle Icabaru','Av. Libertador','Calle Yocoima'
+    ];
+    v_lugares TEXT[] := ARRAY[
+        'Res. Las Acacias','Urb. Dalia Blanca','Res. Orinoco','Urb. Simon Bolivar','Res. El Roble',
+        'Urb. Las Americas','Res. Guayana','Urb. La Esperanza','Res. Los Pinos',
+        'Conj. Res. Don Pedro','Urb. San Felix','Res. El Paraiso'
+    ];
+    v_referencias TEXT[] := ARRAY[
+        'Frente a la panaderia','Cerca de la farmacia','A dos cuadras de la plaza',
+        'Al lado de la bodega','Cerca del colegio','Frente al parque',
+        'A una cuadra de la avenida principal','Cerca de la iglesia','Portón negro',
+        'Casa de rejas blancas'
+    ];
     v_id_usuario    INT;
     v_id_cliente    INT;
     v_cedula_rif    VARCHAR(12);
@@ -159,19 +242,25 @@ DECLARE
     i INT;
     j INT;
 BEGIN
-    FOR i IN 1..50 LOOP
+    FOR i IN 1..67 LOOP
         v_cedula_rif := CASE WHEN i % 2 = 0 THEN 'V-' || (20000000 + i)::text ELSE NULL END;
 
         v_id_usuario := fn_registrar_usuario('cliente' || lpad(i::text, 2, '0') || '@demo.com', 'demo1234', 'cliente');
 
         INSERT INTO cliente (id_usuario, nombre, telefono, cedula_rif)
-        VALUES (v_id_usuario, 'Cliente ' || i, '0424-' || (7000000 + i)::text, v_cedula_rif)
+        VALUES (
+            v_id_usuario,
+            v_nombres[((i - 1) % array_length(v_nombres, 1)) + 1] || ' ' ||
+            v_apellidos[((i * 7 - 1) % array_length(v_apellidos, 1)) + 1],
+            '0424-' || lpad(floor(random() * 10000000)::TEXT, 7, '0'),
+            v_cedula_rif
+        )
         RETURNING id_cliente INTO v_id_cliente;
 
         v_num_direcc := 1 + (i % 2);
 
         FOR j IN 1..v_num_direcc LOOP
-            SELECT id_zona, latitud_centro, longitud_centro INTO v_zona_centro
+            SELECT id_zona, nombre, latitud_centro, longitud_centro INTO v_zona_centro
             FROM zona ORDER BY random() LIMIT 1;
 
             v_lat := v_zona_centro.latitud_centro + (random() - 0.5) * 0.012;
@@ -180,7 +269,10 @@ BEGIN
             INSERT INTO direccion_cliente (id_cliente, id_zona, direccion, referencia, latitud, longitud, principal)
             VALUES (
                 v_id_cliente, v_zona_centro.id_zona,
-                'Calle ' || j || ', Puerto Ordaz', 'Cerca de un punto de referencia conocido',
+                v_calles[((i + j) % array_length(v_calles, 1)) + 1] || ', ' ||
+                v_lugares[((i * 3 + j) % array_length(v_lugares, 1)) + 1] || ', ' ||
+                v_zona_centro.nombre || ', Puerto Ordaz',
+                v_referencias[((i + j) % array_length(v_referencias, 1)) + 1],
                 v_lat, v_lon, (j = 1)
             );
         END LOOP;
@@ -249,7 +341,7 @@ BEGIN
 
     CREATE TEMP TABLE tmp_lineas (id_producto INT, cantidad INT, precio NUMERIC, exento BOOLEAN) ON COMMIT DROP;
 
-    FOR i IN 1..500 LOOP
+    FOR i IN 1..667 LOOP
         BEGIN
             v_id_restaurante := NULL;
             v_id_repartidor  := NULL;
