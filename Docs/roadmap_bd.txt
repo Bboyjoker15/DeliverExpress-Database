@@ -1,0 +1,921 @@
+==========================================================================
+ DELIVEREXPRESS - ROADMAP DE BASE DE DATOS
+ Integrantes 1 y 2 (Base de datos)
+==========================================================================
+
+Este archivo es el CONTRATO de la base de datos. Backend y frontend usan
+estos nombres tal cual. Si algo no esta aqui, NO se inventa: se pregunta
+al grupo, se decide y se agrega a este archivo.
+
+--------------------------------------------------------------------------
+ 0. REGLAS GENERALES (para los dos)
+--------------------------------------------------------------------------
+- PostgreSQL 16, instalado local en cada PC. Nada de Supabase ni nube.
+- Base de datos: deliverexpress   Esquema: deliverexpress
+- Zona horaria de la base: America/Caracas
+    ALTER DATABASE deliverexpress SET timezone TO 'America/Caracas';
+- La fuente de verdad son los scripts del repositorio (carpeta database/).
+  Nadie crea ni cambia tablas "a mano" en pgAdmin sin pasarlo al script.
+- Antes de subir a GitHub: ejecutar ejecutar_todo.sql desde cero sin errores.
+- Cada integrante SOLO edita sus scripts (ver seccion 2).
+- Cambiar una tabla de 01_esquema_tablas.sql se AVISA al grupo antes.
+- Dinero: NUMERIC(10,2). Fechas: TIMESTAMPTZ. Coordenadas: NUMERIC(9,6).
+- Moneda: todos los precios se guardan en USD. El cliente paga en USD o en
+  bolivares (VES); se guarda la tasa BCV del dia y el total en bolivares.
+  Si paga en USD se cobra IGTF 3%. IVA general 16%; productos exentos 0%.
+- Nombres: snake_case, tablas en singular.
+    PK = id_<tabla>      FK = mismo nombre que la PK que referencia
+    Funciones fn_   Triggers trg_   Funciones de trigger fn_trg_
+    Vistas vw_      Indices idx_<tabla>_<columnas>
+    Restricciones pk_, fk_, ck_, uq_ + tabla + detalle
+- Errores de negocio: toda funcion que falle lanza
+    RAISE EXCEPTION 'CODIGO: descripcion en espanol';
+  El backend lee el CODIGO. Codigos permitidos (no inventar otros):
+    DIRECCION_INVALIDA        la direccion no existe o no es del cliente
+    RESTAURANTE_NO_DISPONIBLE inactivo, cerrado o no cubre la zona
+    PRODUCTO_INVALIDO         no existe, otro restaurante, no disponible o cantidad <= 0
+    FUERA_DE_COBERTURA        la distancia no entra en ninguna tarifa
+    TRANSICION_INVALIDA       cambio de estado no permitido
+    REPARTIDOR_NO_ASIGNADO    se intenta pasar a en_camino sin repartidor
+    REPARTIDOR_NO_DISPONIBLE  reasignacion manual a un repartidor no libre
+    OFERTA_NO_PENDIENTE       se responde una oferta ya respondida o expirada
+    CALIFICACION_NO_PERMITIDA pedido no entregado o calificacion repetida
+    EMAIL_REPETIDO            registro con un email que ya existe
+    TASA_BCV_NO_REGISTRADA    no hay ninguna tasa BCV cargada para esa fecha ni antes
+    FACTURA_INMUTABLE         se intenta modificar o borrar una factura
+    FACTURA_YA_ANULADA        se intenta anular una factura ya anulada o una nota de credito
+
+--------------------------------------------------------------------------
+ 1. QUIEN HACE QUE
+--------------------------------------------------------------------------
+INTEGRANTE 1 (estructura, vistas, facturacion y seguridad)
+  - 00_reset.sql, 01_esquema_tablas.sql, 02_catalogos.sql
+  - 07_vistas.sql
+  - 08_facturacion.sql (facturas, notas de credito, comisiones, liquidaciones,
+    libro de ventas)
+  - 09_indices_roles.sql (incluye funciones de registro y login)
+  - 10_datos_prueba.sql (con ayuda del integrante 3)
+  - ejecutar_todo.sql
+  - Respaldo con pg_dump y prueba de restauracion
+  - Comparativa de indices con EXPLAIN ANALYZE
+
+INTEGRANTE 2 (logica del negocio)
+  - 03_funciones_logistica.sql
+  - 04_funciones_pedidos.sql
+  - 05_triggers_pedidos.sql
+  - 06_pagos_calificaciones.sql
+  - Pruebas de cada funcion (archivo pruebas_funciones.sql)
+  - Demostracion de concurrencia (dos ventanas de Query Tool)
+
+--------------------------------------------------------------------------
+ 2. ORDEN DE LOS SCRIPTS (carpeta database/)
+--------------------------------------------------------------------------
+  00_reset.sql                 Int.1  DROP SCHEMA deliverexpress CASCADE;
+                                      CREATE SCHEMA deliverexpress;
+                                      CREATE EXTENSION IF NOT EXISTS pgcrypto;
+                                      SET search_path TO deliverexpress;
+  01_esquema_tablas.sql        Int.1  las 27 tablas
+  02_catalogos.sql             Int.1  zonas, categorias, estados, tarifas, parametros,
+                                      correlativo
+  03_funciones_logistica.sql   Int.2
+  04_funciones_pedidos.sql     Int.2
+  05_triggers_pedidos.sql      Int.2
+  06_pagos_calificaciones.sql  Int.2
+  07_vistas.sql                Int.1
+  08_facturacion.sql           Int.1
+  09_indices_roles.sql         Int.1
+  10_datos_prueba.sql          Int.1 (+ Int.3)
+  ejecutar_todo.sql            Int.1  \i de 00 a 10 en ese orden
+  pruebas_funciones.sql        Int.2  (no entra en ejecutar_todo)
+  pruebas_facturacion.sql      Int.1  (no entra en ejecutar_todo)
+
+Cada script empieza con:  SET search_path TO deliverexpress;
+
+--------------------------------------------------------------------------
+ 3. TABLAS (01_esquema_tablas.sql) - INTEGRANTE 1
+--------------------------------------------------------------------------
+Todas las columnas son NOT NULL salvo las marcadas (NULL).
+
+usuario
+  id_usuario        SERIAL PK
+  email             VARCHAR(120) UNIQUE
+  password_hash     TEXT                 (crypt de pgcrypto, nunca texto plano)
+  rol               VARCHAR(20) CHECK IN ('cliente','restaurante','repartidor','coordinador','admin')
+  activo            BOOLEAN DEFAULT TRUE
+  fecha_registro    TIMESTAMPTZ DEFAULT now()
+
+zona
+  id_zona           SERIAL PK
+  nombre            VARCHAR(80) UNIQUE
+  descripcion       TEXT (NULL)
+  latitud_centro    NUMERIC(9,6)
+  longitud_centro   NUMERIC(9,6)
+
+categoria
+  id_categoria      SERIAL PK
+  nombre            VARCHAR(60) UNIQUE
+
+restaurante
+  id_restaurante        SERIAL PK
+  id_usuario            INT UNIQUE FK usuario
+  id_categoria          INT FK categoria
+  nombre                VARCHAR(100)
+  direccion             VARCHAR(200)
+  telefono              VARCHAR(20)
+  latitud               NUMERIC(9,6) CHECK BETWEEN -90 AND 90
+  longitud              NUMERIC(9,6) CHECK BETWEEN -180 AND 180
+  tiempo_prep_min       INT CHECK > 0
+  rif                   VARCHAR(12) UNIQUE CHECK (rif ~ '^[VEJPG]-[0-9]{8}-[0-9]$')
+  razon_social          VARCHAR(150)
+  direccion_fiscal      VARCHAR(250)
+  calificacion_promedio NUMERIC(3,2) DEFAULT 0
+  total_calificaciones  INT DEFAULT 0
+  activo                BOOLEAN DEFAULT TRUE
+
+horario_restaurante
+  id_horario        SERIAL PK
+  id_restaurante    INT FK restaurante ON DELETE CASCADE
+  dia_semana        SMALLINT CHECK BETWEEN 0 AND 6   (0 = domingo, igual que EXTRACT(DOW))
+  hora_apertura     TIME
+  hora_cierre       TIME
+  CHECK (hora_cierre > hora_apertura)      (no se manejan horarios que pasan de medianoche)
+  UNIQUE (id_restaurante, dia_semana)
+
+restaurante_zona                         (zonas a las que entrega cada restaurante)
+  id_restaurante    INT FK restaurante ON DELETE CASCADE
+  id_zona           INT FK zona
+  PK (id_restaurante, id_zona)
+
+producto
+  id_producto       SERIAL PK
+  id_restaurante    INT FK restaurante
+  nombre            VARCHAR(100)
+  descripcion       TEXT (NULL)
+  precio            NUMERIC(10,2) CHECK > 0      (sin IVA)
+  exento_iva        BOOLEAN DEFAULT FALSE        (TRUE = alicuota 0%, si no 16%)
+  disponible        BOOLEAN DEFAULT TRUE
+  (los productos NO se borran: se ponen disponible = FALSE)
+
+cliente
+  id_cliente            SERIAL PK
+  id_usuario            INT UNIQUE FK usuario
+  nombre                VARCHAR(100)
+  telefono              VARCHAR(20)
+  cedula_rif            VARCHAR(12) (NULL) CHECK (cedula_rif ~ '^[VE]-[0-9]{6,9}$'
+                                               OR cedula_rif ~ '^[VEJPG]-[0-9]{8}-[0-9]$')
+                        (NULL = la factura sale a nombre del cliente sin RIF)
+  calificacion_promedio NUMERIC(3,2) DEFAULT 0
+  total_calificaciones  INT DEFAULT 0
+  en_revision           BOOLEAN DEFAULT FALSE
+
+direccion_cliente
+  id_direccion      SERIAL PK
+  id_cliente        INT FK cliente
+  id_zona           INT FK zona
+  direccion         VARCHAR(200)
+  referencia        VARCHAR(200) (NULL)
+  latitud           NUMERIC(9,6)
+  longitud          NUMERIC(9,6)
+  principal         BOOLEAN DEFAULT FALSE
+
+repartidor
+  id_repartidor             SERIAL PK
+  id_usuario                INT UNIQUE FK usuario
+  id_zona                   INT FK zona
+  nombre                    VARCHAR(100)
+  telefono                  VARCHAR(20)
+  cedula                    VARCHAR(12) UNIQUE CHECK (cedula ~ '^[VE]-[0-9]{6,9}$')
+  tipo_vehiculo             VARCHAR(12) CHECK IN ('bicicleta','moto','auto')
+  disponibilidad            VARCHAR(12) DEFAULT 'desconectado' CHECK IN ('libre','ocupado','desconectado')
+  prioridad                 VARCHAR(8) DEFAULT 'normal' CHECK IN ('normal','baja')
+  latitud_actual            NUMERIC(9,6) (NULL)
+  longitud_actual           NUMERIC(9,6) (NULL)
+  ubicacion_actualizada_en  TIMESTAMPTZ (NULL)
+  calificacion_promedio     NUMERIC(3,2) DEFAULT 0
+  total_calificaciones      INT DEFAULT 0
+  en_revision               BOOLEAN DEFAULT FALSE
+  activo                    BOOLEAN DEFAULT TRUE
+
+coordinador
+  id_coordinador    SERIAL PK
+  id_usuario        INT UNIQUE FK usuario
+  nombre            VARCHAR(100)
+  telefono          VARCHAR(20)
+
+estado_pedido                            (IDs FIJOS, no SERIAL)
+  id_estado         SMALLINT PK
+  codigo            VARCHAR(30) UNIQUE
+  nombre            VARCHAR(40)
+  orden             SMALLINT
+
+pedido
+  id_pedido             SERIAL PK
+  id_cliente            INT FK cliente
+  id_restaurante        INT FK restaurante
+  id_direccion          INT FK direccion_cliente
+  id_repartidor         INT FK repartidor (NULL)
+  id_estado             SMALLINT FK estado_pedido DEFAULT 1
+  distancia_km          NUMERIC(6,2) CHECK >= 0
+  subtotal              NUMERIC(10,2) CHECK >= 0     (productos, sin IVA)
+  costo_envio           NUMERIC(10,2) CHECK >= 0     (sin IVA)
+  propina               NUMERIC(10,2) DEFAULT 0 CHECK >= 0
+  iva_total             NUMERIC(10,2) DEFAULT 0 CHECK >= 0
+  igtf                  NUMERIC(10,2) DEFAULT 0 CHECK >= 0
+  comision_plataforma   NUMERIC(10,2) CHECK >= 0
+  monto_restaurante     NUMERIC(10,2) CHECK >= 0
+  total                 NUMERIC(10,2)                (en USD)
+  moneda_pago           CHAR(3) DEFAULT 'USD' CHECK IN ('USD','VES')
+  tasa_bcv_aplicada     NUMERIC(14,4) CHECK > 0      (Bs por 1 USD, del dia del pedido)
+  total_ves             NUMERIC(14,2)
+  tiempo_estimado_min   INT (NULL)
+  motivo_cancelacion    VARCHAR(200) (NULL)
+  fecha_creacion        TIMESTAMPTZ DEFAULT now()
+  CHECK (total = subtotal + costo_envio + propina + iva_total + igtf)
+  CHECK (comision_plataforma + monto_restaurante = subtotal)
+  CHECK (moneda_pago = 'USD' OR igtf = 0)
+
+detalle_pedido
+  id_pedido         INT FK pedido ON DELETE CASCADE
+  id_producto       INT FK producto
+  cantidad          INT CHECK > 0
+  precio_unitario   NUMERIC(10,2)        (copia del precio al momento del pedido)
+  subtotal          NUMERIC(10,2)
+  PK (id_pedido, id_producto)
+  CHECK (subtotal = cantidad * precio_unitario)
+
+historial_estado_pedido
+  id_historial      SERIAL PK
+  id_pedido         INT FK pedido ON DELETE CASCADE
+  id_estado         SMALLINT FK estado_pedido
+  fecha_hora        TIMESTAMPTZ DEFAULT now()
+  id_usuario        INT FK usuario (NULL)   (quien hizo el cambio)
+
+oferta_asignacion
+  id_oferta         SERIAL PK
+  id_pedido         INT FK pedido
+  id_repartidor     INT FK repartidor
+  distancia_km      NUMERIC(6,2)         (del repartidor al restaurante)
+  fecha_oferta      TIMESTAMPTZ DEFAULT now()
+  respuesta         VARCHAR(10) DEFAULT 'pendiente' CHECK IN ('pendiente','aceptada','rechazada','expirada')
+  fecha_respuesta   TIMESTAMPTZ (NULL)
+
+ubicacion_repartidor
+  id_ubicacion      BIGSERIAL PK
+  id_repartidor     INT FK repartidor
+  id_pedido         INT FK pedido (NULL)
+  latitud           NUMERIC(9,6)
+  longitud          NUMERIC(9,6)
+  fecha_hora        TIMESTAMPTZ DEFAULT now()
+
+tarifa_envio
+  id_tarifa         SERIAL PK
+  km_desde          NUMERIC(6,2)
+  km_hasta          NUMERIC(6,2)
+  precio            NUMERIC(10,2) CHECK > 0
+  CHECK (km_hasta > km_desde)
+
+pago
+  id_pago           SERIAL PK
+  id_pedido         INT UNIQUE FK pedido
+  monto             NUMERIC(10,2) CHECK > 0      (en USD, igual a pedido.total)
+  moneda            CHAR(3) CHECK IN ('USD','VES')
+  metodo            VARCHAR(20) DEFAULT 'tarjeta_credito'
+  ultimos4          CHAR(4) CHECK (ultimos4 ~ '^[0-9]{4}$')
+  referencia        VARCHAR(40) UNIQUE
+  estado            VARCHAR(12) DEFAULT 'aprobado' CHECK IN ('aprobado','rechazado','reembolsado')
+  fecha             TIMESTAMPTZ DEFAULT now()
+
+calificacion
+  id_calificacion   SERIAL PK
+  id_pedido         INT FK pedido
+  tipo              VARCHAR(25) CHECK IN ('cliente_a_repartidor','cliente_a_restaurante','repartidor_a_cliente')
+  puntaje           SMALLINT CHECK BETWEEN 1 AND 5
+  comentario        VARCHAR(300) (NULL)
+  fecha             TIMESTAMPTZ DEFAULT now()
+  UNIQUE (id_pedido, tipo)
+
+parametro_sistema
+  clave             VARCHAR(50) PK
+  valor             VARCHAR(100)
+  descripcion       TEXT (NULL)
+
+--- Tablas de facturacion (tambien en 01_esquema_tablas.sql) ---
+
+tasa_bcv                                 (la carga el admin, una por dia)
+  id_tasa           SERIAL PK
+  fecha             DATE UNIQUE
+  tasa_usd          NUMERIC(14,4) CHECK > 0     (Bs por 1 USD)
+  id_usuario        INT FK usuario (NULL)        (quien la cargo)
+  fecha_registro    TIMESTAMPTZ DEFAULT now()
+
+correlativo                              (numeracion SIN huecos, ver seccion 8b)
+  punto_venta       SMALLINT PK
+  ultimo_numero     INT DEFAULT 0 CHECK >= 0
+  ultimo_control    INT DEFAULT 0 CHECK >= 0
+
+factura                                  (facturas al cliente, de comision y notas de credito)
+  id_factura                SERIAL PK
+  tipo                      VARCHAR(20) CHECK IN ('factura_cliente','factura_comision','nota_credito')
+  numero_factura            VARCHAR(13) UNIQUE    formato PPPP-NNNNNNNN (ej. 0001-00000123)
+  numero_control            VARCHAR(9) UNIQUE     formato PP-NNNNNN     (ej. 01-000123)
+  punto_venta               SMALLINT FK correlativo
+  estado                    VARCHAR(10) DEFAULT 'emitida' CHECK IN ('emitida','anulada')
+  id_cliente                INT FK cliente (NULL)
+  id_restaurante            INT FK restaurante (NULL)
+  id_pedido                 INT FK pedido (NULL)       (solo factura_cliente)
+  id_factura_afectada       INT FK factura (NULL)      (solo nota_credito)
+  rif_emisor                VARCHAR(12)           \
+  razon_social_emisor       VARCHAR(150)           | copia de los datos al momento de emitir,
+  direccion_fiscal_emisor   VARCHAR(250)           | porque la factura no se puede modificar
+  rif_receptor              VARCHAR(12) (NULL)     | aunque despues cambien los datos
+  razon_social_receptor     VARCHAR(150)           |
+  direccion_fiscal_receptor VARCHAR(250) (NULL)   /
+  periodo_desde             DATE (NULL)                (solo factura_comision)
+  periodo_hasta             DATE (NULL)
+  moneda                    CHAR(3) CHECK IN ('USD','VES')
+  tasa_bcv                  NUMERIC(14,4) CHECK > 0
+  base_imponible_16         NUMERIC(10,2) DEFAULT 0
+  base_exenta               NUMERIC(10,2) DEFAULT 0
+  monto_no_sujeto           NUMERIC(10,2) DEFAULT 0    (la propina)
+  iva_16                    NUMERIC(10,2) DEFAULT 0
+  igtf                      NUMERIC(10,2) DEFAULT 0
+  total                     NUMERIC(10,2)              (en USD)
+  total_ves                 NUMERIC(14,2)
+  observaciones             VARCHAR(300) (NULL)        (motivo de la nota de credito)
+  id_usuario                INT FK usuario (NULL)      (quien la genero; NULL = sistema)
+  fecha_emision             TIMESTAMPTZ DEFAULT now()
+  CHECK (num_nonnulls(id_cliente, id_restaurante) = 1)   (un solo receptor, con FK real)
+  CHECK (tipo <> 'factura_cliente'  OR (id_cliente IS NOT NULL AND id_pedido IS NOT NULL))
+  CHECK (tipo <> 'factura_comision' OR (id_restaurante IS NOT NULL AND periodo_desde IS NOT NULL))
+  CHECK (tipo <> 'nota_credito'     OR id_factura_afectada IS NOT NULL)
+  CHECK (total = base_imponible_16 + base_exenta + monto_no_sujeto + iva_16 + igtf)
+  UNIQUE parcial: un pedido solo tiene una factura_cliente
+    CREATE UNIQUE INDEX uq_factura_pedido ON factura(id_pedido) WHERE tipo = 'factura_cliente';
+
+detalle_factura
+  id_detalle        SERIAL PK
+  id_factura        INT FK factura
+  id_pedido         INT FK pedido (NULL)         (en factura_comision: una linea por pedido)
+  descripcion       VARCHAR(200)
+  cantidad          NUMERIC(10,2) CHECK > 0
+  precio_unitario   NUMERIC(10,2) CHECK >= 0
+  alicuota_iva      NUMERIC(5,2) CHECK IN (0, 16)
+  no_sujeto         BOOLEAN DEFAULT FALSE        (TRUE solo para la propina)
+  base_item         NUMERIC(10,2)                (cantidad * precio_unitario)
+  iva_item          NUMERIC(10,2)
+  subtotal_item     NUMERIC(10,2)                (base_item + iva_item)
+
+liquidacion_repartidor                   (pago periodico al repartidor; no es factura fiscal)
+  id_liquidacion    SERIAL PK
+  numero            VARCHAR(12) UNIQUE           formato LIQ-NNNNNNNN
+  id_repartidor     INT FK repartidor
+  periodo_desde     DATE
+  periodo_hasta     DATE
+  viajes            INT CHECK >= 0
+  total_envios      NUMERIC(10,2)
+  total_propinas    NUMERIC(10,2)
+  total             NUMERIC(10,2)
+  fecha_emision     TIMESTAMPTZ DEFAULT now()
+  CHECK (periodo_hasta >= periodo_desde)
+  CHECK (total = total_envios + total_propinas)
+
+detalle_liquidacion
+  id_liquidacion    INT FK liquidacion_repartidor
+  id_pedido         INT FK pedido UNIQUE         (un pedido no se liquida dos veces)
+  costo_envio       NUMERIC(10,2)
+  propina           NUMERIC(10,2)
+  PK (id_liquidacion, id_pedido)
+
+--------------------------------------------------------------------------
+ 4. CATALOGOS (02_catalogos.sql) - INTEGRANTE 1
+--------------------------------------------------------------------------
+estado_pedido (exactamente estos):
+  1  recibido            Recibido              orden 1
+  2  en_preparacion      En preparacion        orden 2
+  3  listo_para_retirar  Listo para retirar    orden 3
+  4  en_camino           En camino             orden 4
+  5  entregado           Entregado             orden 5
+  6  cancelado           Cancelado             orden 6
+
+parametro_sistema (exactamente estas claves):
+  comision_plataforma       0.15   porcentaje sobre el subtotal de productos
+  rechazo_umbral            0.30   tasa de rechazo que baja la prioridad
+  rechazo_ventana           20     cuantas ofertas recientes se miran
+  rechazo_minimo            5      ofertas minimas antes de evaluar
+  calificacion_minima       3.0    por debajo queda en revision
+  calificaciones_minimas    10     notas minimas antes de evaluar
+  oferta_expira_seg         60     segundos para aceptar una oferta
+  velocidad_bicicleta_kmh   15
+  velocidad_moto_kmh        30
+  velocidad_auto_kmh        25
+  iva_general               0.16   IVA de productos no exentos, envio y comision
+  igtf                      0.03   sobre el total si paga en USD (incluye IVA y propina)
+  punto_venta               1
+  emisor_rif                J-12345678-9          (ficticio)
+  emisor_razon_social       DeliverExpress C.A.
+  emisor_direccion_fiscal   Av. Guayana, Alta Vista, Puerto Ordaz, estado Bolivar (ficticia)
+
+correlativo: una fila (punto_venta 1, ultimo_numero 0, ultimo_control 0)
+
+tarifa_envio (USD):
+  0.00 - 2.00 km    1.50
+  2.00 - 5.00 km    2.50
+  5.00 - 10.00 km   4.00
+  10.00 - 20.00 km  6.00
+  (mas de 20 km = FUERA_DE_COBERTURA)
+
+categoria: Rapida, Pizzeria, Parrilla, Comida criolla, Sushi, Pollo,
+           Arepera, Postres
+
+zona (Puerto Ordaz, estado Bolivar). Tomar el centro de cada zona desde
+OpenStreetMap (clic derecho > "Mostrar direccion" da las coordenadas):
+  Alta Vista, Castillito, Unare, Villa Asia, Los Olivos, Villa Colombia,
+  Core 8, Chilemex
+
+--------------------------------------------------------------------------
+ 5. FUNCIONES DE LOGISTICA (03_funciones_logistica.sql) - INTEGRANTE 2
+--------------------------------------------------------------------------
+fn_param_num(p_clave VARCHAR) RETURNS NUMERIC
+  Devuelve parametro_sistema.valor convertido a numero.
+
+fn_distancia_km(p_lat1 NUMERIC, p_lon1 NUMERIC, p_lat2 NUMERIC, p_lon2 NUMERIC)
+  RETURNS NUMERIC   IMMUTABLE
+  Formula de Haversine, radio de la Tierra 6371 km, redondeado a 2 decimales.
+
+fn_costo_envio(p_distancia NUMERIC) RETURNS NUMERIC
+  Busca en tarifa_envio el rango km_desde <= distancia < km_hasta.
+  Si no hay rango: FUERA_DE_COBERTURA.
+
+fn_restaurante_disponible(p_id_restaurante INT, p_id_direccion INT) RETURNS BOOLEAN
+  TRUE solo si: restaurante activo, tiene horario para el dia de hoy
+  (EXTRACT(DOW FROM now())), la hora actual esta entre apertura y cierre,
+  y la zona de la direccion esta en restaurante_zona.
+
+fn_tasa_bcv(p_fecha DATE) RETURNS NUMERIC
+  Tasa de esa fecha; si no hay (fin de semana, feriado), la ultima anterior.
+  Si no hay ninguna: TASA_BCV_NO_REGISTRADA.
+
+fn_tiempo_estimado(p_id_pedido INT) RETURNS INT
+  minutos = tiempo_prep_min del restaurante
+          + distancia_km / velocidad del vehiculo * 60
+  Si el pedido no tiene repartidor, usar velocidad_moto_kmh.
+  Redondear hacia arriba (CEIL).
+
+--------------------------------------------------------------------------
+ 6. FUNCIONES DE PEDIDOS (04_funciones_pedidos.sql) - INTEGRANTE 2
+--------------------------------------------------------------------------
+fn_cotizar_pedido(p_id_cliente INT, p_id_restaurante INT, p_id_direccion INT,
+                  p_productos JSONB, p_propina NUMERIC, p_moneda CHAR(3))
+  RETURNS TABLE(distancia_km, subtotal, costo_envio, propina, iva_total, igtf,
+                total, tasa_bcv, total_ves)
+  Calcula todo SIN guardar nada. La usa el checkout para mostrar el total y
+  la usa fn_crear_pedido (asi el calculo esta en un solo lugar).
+  Formato de p_productos: [{"id_producto": 3, "cantidad": 2}, ...]
+  Pasos:
+   1. La direccion existe y es del cliente         -> si no DIRECCION_INVALIDA
+   2. fn_restaurante_disponible                     -> si no RESTAURANTE_NO_DISPONIBLE
+   3. Cada producto existe, es del restaurante, disponible, cantidad > 0,
+      y la lista no esta vacia                      -> si no PRODUCTO_INVALIDO
+   4. distancia = fn_distancia_km(restaurante -> direccion)
+      costo_envio = fn_costo_envio(distancia)
+   5. subtotal = suma de cantidad * precio
+      base_16 = suma de productos NO exentos + costo_envio
+      iva_total = ROUND(base_16 * iva_general, 2)
+      igtf = si p_moneda = 'USD': ROUND((subtotal + costo_envio + propina + iva_total) * igtf, 2)
+             si no: 0
+      total = subtotal + costo_envio + propina + iva_total + igtf
+      tasa_bcv = fn_tasa_bcv(current_date)
+      total_ves = ROUND(total * tasa_bcv, 2)
+
+fn_crear_pedido(p_id_cliente INT, p_id_restaurante INT, p_id_direccion INT,
+                p_productos JSONB, p_propina NUMERIC, p_moneda CHAR(3),
+                p_ultimos4 CHAR(4))
+  RETURNS INT  (id_pedido)
+  Pasos:
+   1. SELECT * FROM fn_cotizar_pedido(...)  (hace todas las validaciones)
+   2. comision_plataforma = ROUND(subtotal * comision_plataforma, 2)
+      monto_restaurante = subtotal - comision_plataforma
+      (la comision es sobre productos SIN IVA)
+   3. INSERT pedido (estado 1, con moneda_pago, tasa_bcv_aplicada, iva_total,
+      igtf, total_ves), INSERT detalle_pedido,
+      INSERT pago (monto = total, moneda = p_moneda,
+                   referencia = 'SIM-' || id_pedido || '-' || to_char(now(),'YYYYMMDDHH24MISS'))
+   4. UPDATE tiempo_estimado_min = fn_tiempo_estimado(id_pedido)
+  Todo ocurre en la misma transaccion: si algo falla, no queda nada.
+  La factura NO se crea aqui: se crea al entregar (seccion 8b).
+
+fn_cambiar_estado(p_id_pedido INT, p_nuevo_estado SMALLINT, p_id_usuario INT,
+                  p_motivo VARCHAR DEFAULT NULL) RETURNS VOID
+  UNICA forma de cambiar el estado de un pedido (el backend no hace UPDATE directo).
+   1. PERFORM set_config('deliverexpress.id_usuario', p_id_usuario::text, true);
+      (el trigger de historial lee ese valor con current_setting(..., true))
+   2. Si p_nuevo_estado = 4 y el pedido no tiene repartidor -> REPARTIDOR_NO_ASIGNADO
+   3. UPDATE pedido SET id_estado (y motivo_cancelacion si es 6)
+      (la validacion de la transicion la hace el trigger)
+   4. Si p_nuevo_estado = 2: PERFORM fn_asignar_repartidor(p_id_pedido)
+      (el repartidor se busca cuando el restaurante acepta el pedido)
+   5. Si p_nuevo_estado = 6: las ofertas pendientes de ese pedido pasan a 'expirada'
+
+fn_asignar_repartidor(p_id_pedido INT) RETURNS INT  (id_repartidor ofertado o NULL)
+  Si el pedido ya tiene repartidor o ya tiene una oferta pendiente: devuelve NULL.
+  Candidatos:
+   - activo = TRUE y disponibilidad = 'libre' y con ubicacion (latitud_actual NOT NULL)
+   - su id_zona esta en las zonas que cubre el restaurante (restaurante_zona)
+   - NO tiene otra oferta pendiente
+   - NO rechazo ni dejo expirar una oferta de ESTE pedido
+  Orden: prioridad 'normal' primero, luego menor distancia al restaurante,
+         luego mayor calificacion_promedio.
+  Esqueleto obligatorio (control de concurrencia):
+     SELECT r.id_repartidor, fn_distancia_km(...) AS dist
+     FROM repartidor r ...
+     WHERE ...
+     ORDER BY (r.prioridad = 'baja'), dist, r.calificacion_promedio DESC
+     LIMIT 1
+     FOR UPDATE OF r SKIP LOCKED;
+  Si hay candidato: INSERT oferta_asignacion (pendiente) y devolver su id.
+  Si no hay: devolver NULL (el coordinador lo ve como "sin repartidor").
+
+fn_responder_oferta(p_id_oferta INT, p_acepta BOOLEAN) RETURNS INT
+  Si la oferta no esta 'pendiente' -> OFERTA_NO_PENDIENTE
+  Acepta:  oferta 'aceptada' + fecha_respuesta; pedido.id_repartidor = repartidor;
+           repartidor.disponibilidad = 'ocupado';
+           recalcular pedido.tiempo_estimado_min; devuelve id_repartidor.
+  Rechaza: oferta 'rechazada' + fecha_respuesta;
+           devuelve fn_asignar_repartidor(id_pedido) (siguiente candidato o NULL).
+
+fn_expirar_ofertas() RETURNS INT  (cantidad de ofertas expiradas)
+  El backend la llama cada 30 segundos.
+   1. Ofertas pendientes con mas de oferta_expira_seg -> 'expirada' + fecha_respuesta
+   2. Para cada pedido en estado 2 o 3 sin repartidor y sin oferta pendiente:
+      PERFORM fn_asignar_repartidor(id_pedido)
+
+fn_reasignar_pedido(p_id_pedido INT, p_id_repartidor INT, p_id_usuario INT) RETURNS VOID
+  Uso del coordinador. Solo pedidos en estado 2 o 3.
+   - Si el pedido tenia repartidor: ese repartidor vuelve a 'libre'.
+   - Ofertas pendientes del pedido -> 'expirada'.
+   - Si p_id_repartidor es NULL: pedido sin repartidor y PERFORM fn_asignar_repartidor.
+   - Si no es NULL: el repartidor debe estar 'libre' (si no REPARTIDOR_NO_DISPONIBLE);
+     se asigna directo y pasa a 'ocupado'.
+
+fn_registrar_ubicacion(p_id_repartidor INT, p_latitud NUMERIC, p_longitud NUMERIC)
+  RETURNS VOID
+  INSERT en ubicacion_repartidor con id_pedido = pedido activo del repartidor
+  (estado 2, 3 o 4 y id_repartidor = el suyo), o NULL si no tiene.
+
+--------------------------------------------------------------------------
+ 7. TRIGGERS DE PEDIDOS (05_triggers_pedidos.sql) - INTEGRANTE 2
+--------------------------------------------------------------------------
+trg_validar_transicion   BEFORE UPDATE OF id_estado ON pedido
+  Permitidas: 1->2, 2->3, 3->4, 4->5, 1->6, 2->6, 3->6. Otra -> TRANSICION_INVALIDA
+
+trg_historial_estado     AFTER INSERT OR UPDATE OF id_estado ON pedido
+  INSERT historial_estado_pedido (id_pedido, id_estado, now(),
+    NULLIF(current_setting('deliverexpress.id_usuario', true), '')::INT)
+
+trg_liberar_repartidor   AFTER UPDATE OF id_estado ON pedido
+  Si el nuevo estado es 5 o 6 y hay repartidor: repartidor.disponibilidad = 'libre'
+
+trg_mismo_restaurante    BEFORE INSERT ON detalle_pedido
+  El producto debe ser del mismo restaurante del pedido -> si no PRODUCTO_INVALIDO
+
+trg_notificar_pedido     AFTER INSERT OR UPDATE ON pedido
+  pg_notify('canal_pedidos', json_build_object(
+     'id_pedido', ..., 'id_estado', ..., 'id_cliente', ...,
+     'id_restaurante', ..., 'id_repartidor', ...)::text)
+
+trg_notificar_oferta     AFTER INSERT OR UPDATE ON oferta_asignacion
+  pg_notify('canal_ofertas', json_build_object(
+     'id_oferta', ..., 'id_pedido', ..., 'id_repartidor', ..., 'respuesta', ...)::text)
+
+trg_ubicacion_actual     AFTER INSERT ON ubicacion_repartidor
+  UPDATE repartidor SET latitud_actual, longitud_actual, ubicacion_actualizada_en
+  pg_notify('canal_ubicaciones', json_build_object(
+     'id_repartidor', ..., 'id_pedido', ..., 'id_cliente', ..., 'id_restaurante', ...,
+     'latitud', ..., 'longitud', ...)::text)
+  (id_cliente e id_restaurante salen del pedido; NULL si no tiene pedido)
+
+LOS NOMBRES DE CANALES Y CAMPOS DEL JSON SON CONTRATO CON EL BACKEND.
+
+--------------------------------------------------------------------------
+ 8. PAGOS Y CALIFICACIONES (06_pagos_calificaciones.sql) - INTEGRANTE 2
+--------------------------------------------------------------------------
+fn_calificar(p_id_pedido INT, p_tipo VARCHAR, p_puntaje SMALLINT,
+             p_comentario VARCHAR DEFAULT NULL) RETURNS INT (id_calificacion)
+
+trg_validar_calificacion  BEFORE INSERT ON calificacion
+  El pedido debe estar en estado 5. Si el tipo involucra al repartidor,
+  el pedido debe tener repartidor. Si no -> CALIFICACION_NO_PERMITIDA
+
+trg_actualizar_promedio   AFTER INSERT ON calificacion
+  cliente_a_repartidor  -> recalcula promedio y total del repartidor
+  cliente_a_restaurante -> recalcula promedio y total del restaurante
+  repartidor_a_cliente  -> recalcula promedio y total del cliente
+  Repartidor y cliente: en_revision = (total >= calificaciones_minimas
+                                       AND promedio < calificacion_minima)
+
+trg_actualizar_prioridad  AFTER UPDATE OF respuesta ON oferta_asignacion
+  Cuando la respuesta pasa a 'aceptada', 'rechazada' o 'expirada':
+  toma las ultimas rechazo_ventana ofertas respondidas del repartidor.
+  Si son menos de rechazo_minimo: no cambia nada.
+  tasa = (rechazadas + expiradas) / respondidas
+  prioridad = 'baja' si tasa > rechazo_umbral, si no 'normal'.
+
+El pago se inserta dentro de fn_crear_pedido (seccion 6). No hay otra forma
+de crear pagos.
+
+--------------------------------------------------------------------------
+ 8b. FACTURACION (08_facturacion.sql) - INTEGRANTE 1
+--------------------------------------------------------------------------
+Que se factura:
+  - factura_cliente   automatica cuando el pedido pasa a entregado
+  - factura_comision  a cada restaurante por la comision del 15% de un periodo, + IVA 16%
+  - nota_credito      anula una factura (devolucion o error)
+  - liquidacion_repartidor  pago de envios + propinas de un periodo (no es factura fiscal)
+Fuera del alcance: retenciones de IVA/ISLR, libro de compras, autorizacion
+del SENIAT y PDF con validez legal.
+
+Numeracion SIN huecos:
+  Las facturas deben ser correlativas. Un SEQUENCE puede dejar huecos si una
+  transaccion falla, por eso se usa la tabla correlativo con bloqueo de fila:
+
+fn_siguiente_correlativo(p_punto_venta SMALLINT)
+  RETURNS TABLE(numero_factura VARCHAR, numero_control VARCHAR)
+    UPDATE correlativo SET ultimo_numero = ultimo_numero + 1,
+                           ultimo_control = ultimo_control + 1
+    WHERE punto_venta = p_punto_venta
+    RETURNING lpad(punto_venta::text, 4, '0') || '-' || lpad(ultimo_numero::text, 8, '0'),
+              lpad(punto_venta::text, 2, '0') || '-' || lpad(ultimo_control::text, 6, '0');
+  (el UPDATE bloquea la fila: dos facturas simultaneas esperan su turno.
+   Si la transaccion falla, el numero se devuelve con el ROLLBACK: no hay huecos.
+   Facturas y notas de credito comparten la misma serie: es una simplificacion.)
+
+fn_emitir_factura_cliente(p_id_pedido INT, p_fecha TIMESTAMPTZ DEFAULT now())
+  RETURNS INT (id_factura)
+  - Receptor: el cliente; rif_receptor = cedula_rif (puede ser NULL),
+    razon_social_receptor = nombre del cliente
+  - Emisor: parametros emisor_*
+  - moneda = pedido.moneda_pago, tasa_bcv = pedido.tasa_bcv_aplicada
+  - Lineas de detalle:
+      una por producto (alicuota 0 si exento_iva, si no 16)
+      "Servicio de envio"          alicuota 16
+      "Propina para el repartidor" alicuota 0, no_sujeto = TRUE (si propina > 0)
+  - Totales de la cabecera iguales a los del pedido (iva_16 = iva_total, igtf, total, total_ves)
+  - p_fecha existe para poder facturar los pedidos historicos de los datos de prueba
+
+trg_facturar_pedido   AFTER UPDATE OF id_estado ON pedido
+  Si el nuevo estado es 5 (entregado): PERFORM fn_emitir_factura_cliente(NEW.id_pedido)
+
+fn_anular_factura(p_id_factura INT, p_motivo VARCHAR, p_id_usuario INT)
+  RETURNS INT (id de la nota de credito)
+  - La factura debe ser factura_cliente o factura_comision en estado 'emitida',
+    si no FACTURA_YA_ANULADA
+  - Crea una nota_credito con el mismo receptor, montos y lineas que la original,
+    id_factura_afectada = la original, observaciones = p_motivo
+  - Pone la original en estado 'anulada'
+  - Si es factura_cliente: pago.estado = 'reembolsado'
+  (Uso tipico: devoluciones de pedidos, que el cliente dijo que eran el 10%)
+
+fn_generar_facturas_comision(p_desde DATE, p_hasta DATE, p_id_usuario INT)
+  RETURNS INT (cantidad de facturas creadas)
+  Para cada restaurante con pedidos entregados en el periodo que todavia no
+  esten en una factura_comision emitida:
+  - Una factura con una linea por pedido: "Comision 15% pedido #N",
+    base = comision_plataforma, alicuota 16
+  - moneda 'USD', tasa_bcv = fn_tasa_bcv(current_date), igtf 0
+  - Receptor: el restaurante (rif, razon_social, direccion_fiscal)
+  Si un restaurante no tiene pedidos en el periodo, no se le factura.
+
+fn_generar_liquidaciones(p_desde DATE, p_hasta DATE)
+  RETURNS INT (cantidad de liquidaciones creadas)
+  Para cada repartidor con pedidos entregados en el periodo que no esten en
+  detalle_liquidacion: crea la liquidacion (numero LIQ-NNNNNNNN usando el
+  id_liquidacion) y una fila de detalle por pedido.
+
+Inmutabilidad:
+trg_factura_inmutable          BEFORE UPDATE OR DELETE ON factura
+  - DELETE: siempre FACTURA_INMUTABLE
+  - UPDATE: solo se permite cambiar estado de 'emitida' a 'anulada';
+    cualquier otro cambio -> FACTURA_INMUTABLE. Forma sencilla de comprobarlo:
+      IF (to_jsonb(NEW) - 'estado') IS DISTINCT FROM (to_jsonb(OLD) - 'estado')
+         OR NOT (OLD.estado = 'emitida' AND NEW.estado = 'anulada') THEN ...
+trg_detalle_factura_inmutable  BEFORE UPDATE OR DELETE ON detalle_factura
+  - siempre FACTURA_INMUTABLE
+trg_liquidacion_inmutable      BEFORE UPDATE OR DELETE ON liquidacion_repartidor
+                               y ON detalle_liquidacion
+  - siempre FACTURA_INMUTABLE
+
+Vistas de facturacion (tambien en este script; columnas = contrato):
+vw_libro_ventas   (facturas y notas de credito; las notas con montos en NEGATIVO)
+  fecha_emision, tipo, numero_factura, numero_control, estado,
+  numero_factura_afectada, rif_receptor, razon_social_receptor, moneda,
+  tasa_bcv, base_imponible_16, base_exenta, monto_no_sujeto, iva_16, igtf,
+  total, total_ves
+vw_resumen_iva_mensual
+  periodo (texto 'YYYY-MM'), cantidad_documentos, base_imponible_16,
+  base_exenta, iva_debito, igtf, total, total_ves
+vw_facturas     (lista para pantallas: una fila por factura)
+  id_factura, tipo, numero_factura, numero_control, estado, fecha_emision,
+  id_cliente, id_restaurante, id_pedido, razon_social_receptor, moneda,
+  total, total_ves
+
+--------------------------------------------------------------------------
+ 9. VISTAS (07_vistas.sql) - INTEGRANTE 1
+--------------------------------------------------------------------------
+Las columnas listadas son contrato con el backend (mismos nombres).
+
+vw_pedidos_activos        (pedidos en estado 1, 2, 3 o 4)
+  id_pedido, fecha_creacion, id_estado, estado_codigo, estado_nombre,
+  minutos_en_estado, id_restaurante, restaurante, tiempo_prep_min,
+  restaurante_lat, restaurante_lon, id_cliente, cliente, direccion_entrega,
+  entrega_lat, entrega_lon, id_repartidor, repartidor, repartidor_lat,
+  repartidor_lon, tiempo_estimado_min, minutos_desde_creacion, total
+
+vw_repartidores_disponibles   (activo y disponibilidad = 'libre')
+  id_repartidor, nombre, id_zona, zona, tipo_vehiculo, prioridad,
+  calificacion_promedio, latitud_actual, longitud_actual
+
+vw_tiempos_por_etapa      (pedidos entregados; minutos entre estados)
+  id_pedido, id_restaurante, id_repartidor, fecha_creacion,
+  min_espera_restaurante (1->2), min_preparacion (2->3),
+  min_espera_retiro (3->4), min_entrega (4->5), min_total (1->5)
+  Calcular con la funcion de ventana LAG sobre historial_estado_pedido.
+
+vw_desempeno_restaurantes
+  id_restaurante, restaurante, categoria, total_pedidos, pedidos_cancelados,
+  prom_min_preparacion, calificacion_promedio, ventas_productos
+
+vw_desempeno_repartidores
+  id_repartidor, repartidor, tipo_vehiculo, entregas, prom_min_entrega,
+  ofertas_recibidas, ofertas_rechazadas, tasa_rechazo, ganancias (envio + propina),
+  calificacion_promedio, prioridad, en_revision
+
+vw_liquidacion            (solo pedidos entregados)
+  fecha (DATE), id_restaurante, restaurante, pedidos, ventas_productos,
+  comision_plataforma, monto_restaurante, envios, propinas
+
+vw_recomendaciones_cliente
+  id_cliente, id_producto, producto, id_restaurante, restaurante, categoria,
+  veces_pedido, ranking (ROW_NUMBER por cliente, 1 = el que mas pide)
+
+--------------------------------------------------------------------------
+ 10. INDICES, SEGURIDAD Y ROLES (09_indices_roles.sql) - INTEGRANTE 1
+--------------------------------------------------------------------------
+Indices:
+  idx_pedido_activos        ON pedido(id_estado) WHERE id_estado IN (1,2,3,4)
+  idx_pedido_cliente_fecha  ON pedido(id_cliente, fecha_creacion)
+  idx_historial_pedido      ON historial_estado_pedido(id_pedido, fecha_hora)
+  idx_repartidor_zona_disp  ON repartidor(id_zona, disponibilidad)
+  idx_ubicacion_rep_fecha   ON ubicacion_repartidor(id_repartidor, fecha_hora DESC)
+  idx_oferta_rep_fecha      ON oferta_asignacion(id_repartidor, fecha_oferta DESC)
+  idx_factura_fecha         ON factura(fecha_emision)          (libro de ventas)
+  idx_detalle_factura_ped   ON detalle_factura(id_pedido)      (evitar facturar comision dos veces)
+  Para cada uno: guardar captura de EXPLAIN ANALYZE antes y despues
+  (con los datos de prueba cargados) para el documento.
+
+Funciones de usuarios:
+  fn_registrar_usuario(p_email, p_password, p_rol) RETURNS INT (id_usuario)
+    password_hash = crypt(p_password, gen_salt('bf'))
+    email repetido -> EMAIL_REPETIDO
+  fn_registrar_cliente(p_email, p_password, p_nombre, p_telefono,
+                       p_cedula_rif DEFAULT NULL) RETURNS INT (id_cliente)
+    crea usuario (rol cliente) + cliente
+  fn_login(p_email, p_password)
+    RETURNS TABLE(id_usuario INT, rol VARCHAR, id_perfil INT, nombre VARCHAR)
+    Compara con crypt(p_password, password_hash). Solo usuarios activos.
+    id_perfil = id_cliente / id_restaurante / id_repartidor / id_coordinador
+    segun el rol (NULL para admin). Si falla: no devuelve filas.
+  (Estas tres funciones las necesita el backend primero: hacerlas en la Fase 2.)
+
+Roles:
+  de_admin     LOGIN, duenio del esquema
+  de_app       LOGIN PASSWORD (va en el .env, no en el script subido)
+               USAGE en el esquema, SELECT/INSERT/UPDATE en todas las tablas,
+               USAGE en secuencias, EXECUTE en todas las funciones,
+               DELETE solo en restaurante_zona y horario_restaurante.
+               En factura, detalle_factura y las tablas de liquidacion: solo
+               SELECT e INSERT (y UPDATE en factura para anular). Los triggers
+               de inmutabilidad protegen igual, pero el permiso es la primera barrera.
+  de_reportes  LOGIN, solo SELECT sobre las vistas vw_
+
+--------------------------------------------------------------------------
+ 11. DATOS DE PRUEBA (10_datos_prueba.sql) - INTEGRANTE 1 (+3)
+--------------------------------------------------------------------------
+Cantidades (las del cliente + extras para reportes):
+  1 admin, 3 coordinadores, 20 restaurantes (8 a 10 productos cada uno,
+  horario todos los dias 08:00-23:00, 2 a 4 zonas cada uno),
+  35 repartidores (mezcla de bicicleta, moto y auto, repartidos en las
+  8 zonas, con ubicacion inicial), 50 clientes (1 o 2 direcciones cada uno).
+
+Usuarios de prueba (TODOS con contrasenia demo1234, contrato con el front):
+  admin@demo.com
+  coord01@demo.com ... coord03@demo.com
+  rest01@demo.com  ... rest20@demo.com
+  rep01@demo.com   ... rep35@demo.com
+  cliente01@demo.com ... cliente50@demo.com
+  (crear con fn_registrar_usuario / fn_registrar_cliente)
+
+Pedidos historicos: unos 500 en los ultimos 60 dias, la mayoria entregados,
+alrededor de 8% cancelados, con historial, ofertas y calificaciones.
+  - Usar generate_series.
+  - Para poder poner fechas pasadas, desactivar triggers SOLO en ese bloque:
+      SET session_replication_role = replica;
+      ... inserts historicos con fechas y montos calculados ...
+      SET session_replication_role = origin;
+  - Al final recalcular promedios y prioridades con un UPDATE.
+
+Facturacion en los datos de prueba:
+  - Tasas BCV ficticias para los ultimos 60 dias habiles (ANTES de crear pedidos),
+    y la de hoy para que la demo funcione.
+  - Datos fiscales ficticios con formato valido: RIF J-XXXXXXXX-X en los 20
+    restaurantes, cedula V-XXXXXXXX en los 35 repartidores, y cedula_rif en
+    la mitad de los clientes.
+  - Algunos productos con exento_iva = TRUE (ej. pan, arepas sin relleno, agua).
+  - Pedidos historicos: mezcla de moneda_pago USD y VES, con iva_total, igtf,
+    tasa y total_ves calculados igual que fn_cotizar_pedido.
+  - Despues de volver a activar los triggers, emitir la factura de cada
+    pedido historico entregado:
+      PERFORM fn_emitir_factura_cliente(id_pedido, fecha_de_entrega);
+    en orden de fecha, para que la numeracion quede cronologica.
+  - Generar facturas de comision y liquidaciones de los meses pasados, y
+    anular 2 o 3 facturas para que el libro de ventas muestre notas de credito.
+
+Pedidos activos para la demo (creados CON las funciones, no con INSERT):
+  unos 10 pedidos repartidos entre los estados 1, 2, 3 y 4.
+
+--------------------------------------------------------------------------
+ 12. RESPALDO - INTEGRANTE 1
+--------------------------------------------------------------------------
+  pg_dump -U postgres -F c -f deliverexpress.backup deliverexpress
+  pg_restore -U postgres -d deliverexpress_restaurada deliverexpress.backup
+  Probarlo antes de la presentacion y dejar los comandos en el README.
+
+--------------------------------------------------------------------------
+ 13. PRUEBAS (pruebas_funciones.sql) - INTEGRANTE 2
+--------------------------------------------------------------------------
+Casos minimos, cada uno con el resultado esperado en un comentario:
+  [ ] Crear pedido valido
+  [ ] Crear pedido con restaurante cerrado     -> RESTAURANTE_NO_DISPONIBLE
+  [ ] Crear pedido fuera de cobertura          -> RESTAURANTE_NO_DISPONIBLE
+  [ ] Producto de otro restaurante             -> PRODUCTO_INVALIDO
+  [ ] Saltar de recibido a entregado           -> TRANSICION_INVALIDA
+  [ ] Pasar a en_camino sin repartidor         -> REPARTIDOR_NO_ASIGNADO
+  [ ] Aceptar pedido -> se crea oferta al repartidor mas cercano
+  [ ] Rechazar oferta -> pasa al siguiente candidato
+  [ ] Rechazar muchas veces -> prioridad 'baja'
+  [ ] Entregar -> repartidor vuelve a 'libre', historial con 5 filas
+  [ ] Calificar pedido no entregado            -> CALIFICACION_NO_PERMITIDA
+  [ ] Calificar dos veces el mismo tipo        -> CALIFICACION_NO_PERMITIDA
+  [ ] 10 calificaciones de 2 -> repartidor en_revision
+  [ ] Concurrencia: dos ventanas asignan a la vez, no toman al mismo repartidor
+  [ ] Pedido pagado en USD -> igtf > 0; en VES -> igtf = 0
+  [ ] Sin ninguna tasa BCV cargada                   -> TASA_BCV_NO_REGISTRADA
+
+Pruebas de facturacion (INTEGRANTE 1, archivo pruebas_facturacion.sql):
+  [ ] Entregar un pedido -> se crea su factura_cliente con numero y control correlativos
+  [ ] Suma de lineas del detalle = totales de la cabecera = totales del pedido
+  [ ] UPDATE o DELETE de una factura                 -> FACTURA_INMUTABLE
+  [ ] Anular factura -> nota de credito, original 'anulada', pago 'reembolsado'
+  [ ] Anular dos veces                               -> FACTURA_YA_ANULADA
+  [ ] Generar comisiones dos veces el mismo periodo -> la segunda crea 0 facturas
+  [ ] Generar liquidaciones dos veces               -> la segunda crea 0
+  [ ] Dos facturas a la vez en dos ventanas: numeros seguidos, sin huecos ni repetidos
+  [ ] Libro de ventas: la nota de credito resta
+
+--------------------------------------------------------------------------
+ 14. ORDEN DE TRABAJO (fases del documento)
+--------------------------------------------------------------------------
+FASE 1 - Diseno (los dos, con el grupo)
+  [ ] Revisar este archivo y el DER con los 5 integrantes
+  [ ] Aprobar tablas y nombres. Desde aqui no se renombra nada sin avisar.
+
+FASE 2 - Estructura
+  Int.1 [ ] 00, 01, 02 funcionando
+        [ ] fn_registrar_usuario, fn_registrar_cliente, fn_login (el backend las necesita ya)
+        [ ] Primeros datos de prueba: catalogos, usuarios, restaurantes, productos,
+            tasa BCV de hoy
+        [ ] Subir a GitHub y avisar al grupo
+  Int.2 [ ] Escribir fn_distancia_km y fn_costo_envio (no dependen de datos)
+        [ ] Borrador de fn_crear_pedido y fn_asignar_repartidor sobre el DER
+
+FASE 3 - Logica
+  Int.2 [ ] 03 y 04 completos (incluye fn_tasa_bcv y fn_cotizar_pedido)
+        [ ] 05 triggers de pedidos (probar que pg_notify llega: LISTEN canal_pedidos; en pgAdmin)
+        [ ] 06 pagos y calificaciones
+        [ ] pruebas_funciones.sql
+  Int.1 [ ] 07 vistas
+        [ ] 08 facturacion: correlativo, factura al cliente, trigger, inmutabilidad
+        [ ] 08 facturacion: notas de credito, comisiones, liquidaciones, vistas
+        [ ] pruebas_facturacion.sql
+        [ ] 09 indices y roles
+        [ ] 10 datos historicos completos (con tasas BCV y facturas)
+
+FASE 4 - Integracion
+  Los dos [ ] Resolver errores que reporte el backend
+           [ ] Ajustar vistas si el frontend necesita otra columna (se agrega aqui primero)
+
+FASE 5 - Cierre
+  Int.1 [ ] EXPLAIN ANALYZE de los indices, respaldo y restauracion
+        [ ] Demo de facturacion: entregar, ver factura, anular, libro de ventas
+  Int.2 [ ] Demostracion de concurrencia ensayada
+  Los dos [ ] Secciones del documento: modelo, funciones, triggers, vistas, roles,
+             facturacion

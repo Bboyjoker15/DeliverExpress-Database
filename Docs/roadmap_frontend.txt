@@ -1,0 +1,302 @@
+==========================================================================
+ DELIVEREXPRESS - ROADMAP DE FRONTEND
+ Integrantes 4 y 5 (Frontend: SvelteKit + Tailwind CSS + Leaflet)
+==========================================================================
+
+Los endpoints, campos del JSON y mensajes de WebSocket estan definidos en
+roadmap_backend.txt. El frontend usa SOLO esas rutas. Si falta un dato o
+una ruta, se le pide al integrante 3 (backend) y se agrega primero en
+roadmap_backend.txt. No se inventan rutas ni campos.
+
+--------------------------------------------------------------------------
+ 0. REGLAS GENERALES
+--------------------------------------------------------------------------
+- SvelteKit + Tailwind CSS. Mapa con Leaflet + OpenStreetMap.
+- Aplicacion web responsiva: debe verse bien en computadora y en celular.
+  (El panel del repartidor y la app del cliente se prueban en celular.)
+- Puerto del frontend: 5173. URL del backend en el archivo .env:
+      VITE_API_URL=http://localhost:8000
+      VITE_WS_URL=ws://localhost:8000/ws
+- El frontend NO calcula nada del negocio: envio, IVA, IGTF, total, total en
+  bolivares, comision, tiempo estimado y distancia vienen de la API. El
+  carrito puede mostrar el subtotal de productos como referencia; el desglose
+  con impuestos sale de POST /api/cliente/pedidos/cotizar.
+- Montos: dolares como "$ 18,35" y bolivares como "Bs. 669,78" (2 decimales).
+  Una sola funcion de formato en src/lib/formato.js (Int.4).
+- Los nombres de campos se usan tal cual vienen de la API (snake_case).
+- Mientras la API no este lista: trabajar con datos falsos en
+  src/lib/mock/ con EXACTAMENTE la misma forma de roadmap_backend.txt
+  (seccion 3: forma del pedido). Cuando la ruta exista, se cambia el mock
+  por la llamada real sin tocar las pantallas.
+- Errores: mostrar siempre el campo "mensaje" de la respuesta
+  {"error", "mensaje"} en un aviso (toast). Si llega 401: cerrar sesion
+  y mandar a /login.
+- Cada integrante solo edita sus rutas y los componentes que le tocan
+  (ver seccion 2). Si necesita cambiar un componente del otro, le avisa.
+- Idioma de la interfaz: espaniol.
+
+--------------------------------------------------------------------------
+ 1. ESTRUCTURA DEL PROYECTO
+--------------------------------------------------------------------------
+frontend/
+  .env.ejemplo
+  src/
+    lib/
+      api.js                  Int.4  fetch con token, manejo de errores
+      ws.js                   Int.5  una sola conexion WebSocket (store)
+      stores/sesion.js        Int.4  token, rol, id_perfil, nombre (localStorage)
+      estados.js              Int.4  colores y nombres de los estados (seccion 3)
+      formato.js              Int.4  formato de $ y Bs.
+      mock/                   ambos datos falsos mientras no hay API
+      componentes/
+        EstadoBadge.svelte    Int.4  etiqueta de color del estado
+        LineaEstados.svelte   Int.4  linea de tiempo del historial del pedido
+        Estrellas.svelte      Int.4  calificar de 1 a 5
+        Toast.svelte          Int.4  avisos de error y exito
+        Factura.svelte        Int.4  factura imprimible (la usan todos los roles)
+        Mapa.svelte           Int.5  mapa Leaflet reutilizable
+        TarjetaPedido.svelte  Int.5  resumen de pedido para listas y paneles
+    routes/
+      +layout.svelte          Int.4  barra superior con nombre y cerrar sesion
+      login/                  Int.4
+      registro/               Int.4
+      cliente/...             Int.4
+      restaurante/...         Int.4
+      repartidor/...          Int.5
+      coordinador/...         Int.5
+      admin/...               Int.5
+      factura/[id]/           Int.4  vista imprimible de una factura
+
+Despues del login, redirigir segun el rol:
+  cliente -> /cliente   restaurante -> /restaurante   repartidor -> /repartidor
+  coordinador -> /coordinador   admin -> /admin
+Cada seccion revisa el rol; si no corresponde, manda a /login.
+
+--------------------------------------------------------------------------
+ 2. QUIEN HACE QUE
+--------------------------------------------------------------------------
+INTEGRANTE 4: base del proyecto, login, cliente, restaurante y la vista de factura
+INTEGRANTE 5: mapa, WebSocket, repartidor, coordinador (incluye facturacion) y admin
+
+--------------------------------------------------------------------------
+ 3. ESTADOS Y COLORES (iguales en todas las pantallas)
+--------------------------------------------------------------------------
+  id  codigo              texto                clases Tailwind
+  1   recibido            Recibido             bg-gray-200 text-gray-800
+  2   en_preparacion      En preparacion       bg-yellow-200 text-yellow-900
+  3   listo_para_retirar  Listo para retirar   bg-blue-200 text-blue-900
+  4   en_camino           En camino            bg-purple-200 text-purple-900
+  5   entregado           Entregado            bg-green-200 text-green-900
+  6   cancelado           Cancelado            bg-red-200 text-red-900
+Esto vive en src/lib/estados.js y se usa desde ahi (no copiar colores a mano).
+
+Marcadores del mapa (en Mapa.svelte):
+  restaurante  icono de tienda
+  cliente      icono de casa
+  repartidor   circulo: verde = libre, naranja = ocupado, gris = desconectado
+
+Centro del mapa por defecto: Puerto Ordaz, aprox. lat 8.29, lon -62.74,
+zoom 13 (ajustar si queda corrido).
+
+--------------------------------------------------------------------------
+ 4. PANTALLAS DEL INTEGRANTE 4
+--------------------------------------------------------------------------
+/login        email y contrasenia -> POST /api/auth/login
+              (probar con cliente01@demo.com / demo1234, etc.)
+/registro     POST /api/auth/registro-cliente, luego login automatico
+
+CLIENTE
+/cliente
+  - Selector de direccion (GET /api/cliente/direcciones) y boton "Agregar
+    direccion" (formulario con zona de GET /api/zonas y marcar el punto en
+    el mapa -> POST /api/cliente/direcciones)
+  - Filtro por categoria (GET /api/categorias)
+  - Lista de restaurantes: GET /api/cliente/restaurantes?id_direccion=...
+    mostrar nombre, categoria, estrellas, tiempo_prep_min, costo_envio,
+    y "Cerrado" en gris si abierto_ahora = false (no se puede entrar)
+  - Bloque "Te puede gustar": GET /api/cliente/recomendaciones
+/cliente/restaurante/[id]
+  - Datos y horario: GET /api/cliente/restaurantes/{id}
+  - Menu: GET /api/cliente/restaurantes/{id}/productos
+  - Carrito (en un store; solo productos de UN restaurante)
+/cliente/checkout
+  - Resumen del carrito, propina (botones 0, 1, 2, 3 USD y campo libre)
+  - Moneda de pago: Dolares o Bolivares. Aviso: "Pagando en dolares se cobra
+    IGTF 3%"
+  - Cada vez que cambia propina o moneda: POST /api/cliente/pedidos/cotizar
+    y mostrar: subtotal, envio, IVA, IGTF, total en $ y total en Bs.
+  - Formulario de tarjeta simulado (numero, vencimiento, CVV; al backend
+    SOLO se mandan los ultimos 4 digitos en "ultimos4")
+  - POST /api/cliente/pedidos -> ir a /cliente/pedidos/[id]
+/cliente/pedidos
+  - Historial: GET /api/cliente/pedidos con EstadoBadge
+/cliente/pedidos/[id]   (seguimiento)
+  - GET /api/cliente/pedidos/{id}
+  - LineaEstados con las horas de cada estado
+  - Mapa (componente del Int.5) con restaurante, casa y repartidor
+  - Mensaje WS "pedido" con este id_pedido -> recargar el pedido
+  - Mensaje WS "ubicacion" con este id_pedido -> mover el repartidor
+  - Si estado = entregado: calificar repartidor y restaurante con Estrellas
+    (POST /api/cliente/pedidos/{id}/calificar, uno por tipo; ocultar los
+    que ya esten en calificaciones_hechas)
+  - Si id_factura no es null: boton "Ver factura" -> /factura/[id_factura]
+/cliente/perfil
+  - Cedula o RIF para las facturas: PUT /api/cliente/datos-fiscales
+    (validar formato V-12345678 o J-12345678-9 antes de enviar)
+
+RESTAURANTE
+/restaurante   (tablero de pedidos)
+  - GET /api/restaurante/pedidos?activos=true
+  - Tres columnas: Recibido | En preparacion | Listo para retirar
+    (los "en camino" salen del tablero)
+  - Botones: Aceptar (recibido), Marcar listo (en preparacion),
+    Cancelar con motivo (recibido, en preparacion, listo)
+  - En cada tarjeta: productos, hora del pedido, y si ya hay repartidor
+    su nombre, vehiculo y tiempo estimado (pedido RF-21)
+  - Mensaje WS "pedido" -> recargar la lista (y sonido corto si es nuevo)
+/restaurante/menu
+  - GET/POST/PUT /api/restaurante/productos, interruptores "disponible" y
+    "exento de IVA"
+/restaurante/horario
+  - GET/PUT /api/restaurante/horarios (7 filas, una por dia)
+/restaurante/historial
+  - GET /api/restaurante/pedidos?activos=false
+/restaurante/facturas
+  - GET /api/restaurante/facturas: sus facturas de comision (clic -> /factura/[id])
+
+FACTURA (compartida por todos los roles)
+/factura/[id]
+  - GET /api/facturas/{id} y mostrarla con Factura.svelte:
+    la palabra FACTURA (o NOTA DE CREDITO), numero de factura y de control,
+    fecha, datos del emisor y del receptor (RIF o cedula), tabla de lineas con
+    alicuota, base imponible, IVA 16%, exento, no sujeto, IGTF, total en $,
+    tasa BCV y total en Bs. Si esta anulada: sello "ANULADA".
+  - Boton "Imprimir" (window.print) con estilos de impresion de Tailwind (print:)
+
+--------------------------------------------------------------------------
+ 5. PANTALLAS DEL INTEGRANTE 5
+--------------------------------------------------------------------------
+COMPONENTES BASE (hacerlos PRIMERO, los usa tambien el Int.4)
+  Mapa.svelte
+    - Importar Leaflet dentro de onMount (en SvelteKit no existe "window"
+      al renderizar en el servidor)
+    - Propiedades: centro, zoom, marcadores [{id, tipo, lat, lon, texto,
+      disponibilidad}]; al cambiar la lista, mover marcadores sin redibujar todo
+  ws.js
+    - Conecta a VITE_WS_URL?token=... al iniciar sesion; reconecta cada 5 s
+      si se cae; se cierra al cerrar sesion
+    - Expone un store con el ultimo mensaje {tipo, datos}; cada pantalla se
+      suscribe y filtra lo que le importa
+
+REPARTIDOR (pensado para celular)
+/repartidor
+  - GET /api/repartidor/yo: nombre, calificacion, prioridad
+    (si prioridad = baja, aviso: "Tu prioridad bajo por rechazos")
+  - Interruptor Libre / Desconectado: PUT /api/repartidor/disponibilidad
+  - Oferta: al llegar WS "oferta" con su id y respuesta "pendiente", o al
+    entrar a la pantalla, GET /api/repartidor/oferta-pendiente.
+    Ventana con restaurante, direccion de entrega, distancia, envio + propina
+    y cuenta regresiva (segundos_restantes). Botones Aceptar / Rechazar
+    -> POST /api/repartidor/ofertas/{id}/responder
+  - Pedido actual: GET /api/repartidor/pedido-actual con mapa y botones
+    "Retire el pedido" (solo en listo_para_retirar) -> .../retirado
+    "Entregue el pedido" (solo en en_camino)        -> .../entregado
+  - Despues de entregar: calificar al cliente -> .../calificar
+  - Enviar ubicacion: si el navegador da permiso (navigator.geolocation),
+    POST /api/repartidor/ubicacion cada 10 s. Para la demo se usa el
+    simulador del backend, asi que esto es opcional.
+/repartidor/historial
+  - GET /api/repartidor/historial con total ganado (suma envio + propina)
+/repartidor/liquidaciones
+  - GET /api/repartidor/liquidaciones: periodo, viajes, envios, propinas, total
+
+COORDINADOR (la "pantalla grande")
+/coordinador
+  - Mapa grande: repartidores (GET /api/coordinador/repartidores) y pedidos
+    activos (GET /api/coordinador/pedidos-activos) con restaurante y destino
+  - Lista lateral de pedidos activos con EstadoBadge y minutos_en_estado
+  - Resaltar en rojo un pedido si:
+      estado recibido y minutos_en_estado > 10
+      estado en_preparacion y minutos_en_estado > tiempo_prep_min
+      estado en_camino y minutos_desde_creacion > tiempo_estimado_min
+  - Etiqueta "SIN REPARTIDOR" si esta en preparacion o listo y id_repartidor es null
+  - Contadores arriba: activos por estado, repartidores libres/ocupados
+  - Al hacer clic en un pedido: detalle (GET /api/coordinador/pedidos/{id}),
+    Reasignar (elegir repartidor libre o automatico) y Cancelar con motivo
+  - WS "pedido" -> recargar pedidos activos
+    WS "ubicacion" -> mover el repartidor en el mapa
+    WS "oferta" -> recargar pedidos activos
+  - Modo pantalla completa (boton) para la pantalla de la oficina
+/coordinador/reportes
+  - Pestanias: Tiempos, Restaurantes, Repartidores, Liquidacion
+    (GET /api/coordinador/reportes/...), filtro de fechas donde aplique
+  - Tablas ordenables; un grafico simple es opcional
+/coordinador/revision
+  - GET /api/coordinador/revision: clientes y repartidores en revision
+/coordinador/facturacion
+  - Pestania Facturas: GET /api/coordinador/facturas con filtros de tipo y
+    fecha; clic -> /factura/[id]; boton "Anular" pide motivo y confirma
+    (POST /api/coordinador/facturas/{id}/anular)
+  - Pestania Libro de ventas: GET /api/coordinador/libro-ventas (notas de
+    credito en rojo, con signo negativo) y resumen de IVA por mes
+    (GET /api/coordinador/resumen-iva)
+  - Pestania Liquidaciones: GET /api/coordinador/liquidaciones
+
+ADMIN
+/admin: pestanias Zonas, Categorias, Tarifas, Parametros, Tasa BCV,
+        Facturacion, Restaurantes, Repartidores, Coordinadores
+        (formularios con /api/admin/...)
+  - Tasa BCV: formulario fecha + tasa y tabla de las ultimas 60; aviso en
+    rojo si no hay tasa cargada para hoy (sin tasa no se pueden crear pedidos)
+  - Facturacion: elegir periodo y botones "Generar facturas de comision" y
+    "Generar liquidaciones"; mostrar cuantas se crearon
+  - En Restaurantes: elegir zonas de cobertura con casillas y marcar la
+    ubicacion en el mapa; pedir RIF, razon social y direccion fiscal
+  - En Repartidores: pedir cedula
+  - Desactivar usuarios con PUT /api/admin/usuarios/{id}/activo
+
+--------------------------------------------------------------------------
+ 6. ORDEN DE TRABAJO (fases del documento)
+--------------------------------------------------------------------------
+FASE 1 - Diseno
+  Ambos [ ] Leer roadmap_backend.txt (endpoints y forma del pedido)
+        [ ] Bocetos rapidos (papel o Figma) de las pantallas propias
+
+FASE 2 - Base (con datos falsos)
+  Int.4 [ ] Crear el proyecto SvelteKit + Tailwind y subirlo a GitHub
+        [ ] api.js, sesion.js, estados.js, layout, login, registro
+        [ ] EstadoBadge, LineaEstados, Estrellas, Toast
+  Int.5 [ ] Mapa.svelte con marcadores de prueba en Puerto Ordaz
+        [ ] ws.js (probarlo cuando el backend tenga /ws)
+        [ ] Mocks de pedidos activos y repartidores
+
+FASE 3 - Pantallas (con mocks y conectando a medida que la API aparece)
+  Int.4 [ ] Cliente: inicio, restaurante, carrito, checkout, historial
+        [ ] Restaurante: tablero, menu, horario
+  Int.5 [ ] Repartidor: disponibilidad, oferta, pedido actual
+        [ ] Coordinador: mapa y lista de pedidos activos
+
+FASE 4 - Integracion y tiempo real
+  Int.4 [ ] Seguimiento del pedido con mapa y WS
+        [ ] Calificaciones del cliente
+        [ ] Restaurante recibe pedidos en vivo
+        [ ] Checkout con moneda y cotizacion, perfil con cedula/RIF
+        [ ] Factura imprimible y facturas del restaurante
+  Int.5 [ ] Coordinador en vivo (pedidos + ubicaciones)
+        [ ] Reportes y revision
+        [ ] Admin (incluye tasa BCV y generar comisiones/liquidaciones)
+        [ ] Facturacion del coordinador y liquidaciones del repartidor
+        [ ] Probar el panel con el simulador en modo --auto
+  Ambos [ ] Quitar todos los mocks
+        [ ] Probar en celular (misma red WiFi, abrir la IP de la PC:5173).
+            Para eso: en .env cambiar localhost por la IP de la PC en
+            VITE_API_URL y VITE_WS_URL, correr "npm run dev -- --host",
+            y pedir al backend que corra uvicorn con --host 0.0.0.0 y
+            agregue esa IP a CORS_ORIGINS.
+
+FASE 5 - Cierre
+  Ambos [ ] Capturas de cada pantalla para el documento
+        [ ] Guia corta de uso por actor
+        [ ] Ensayo de la demo: pedido desde el celular, restaurante acepta,
+            repartidor entrega, todo visto en vivo en el panel del coordinador,
+            y al final abrir la factura del pedido e imprimirla

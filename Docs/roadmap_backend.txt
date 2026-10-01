@@ -1,0 +1,389 @@
+==========================================================================
+ DELIVEREXPRESS - ROADMAP DE BACKEND
+ Integrante 3 (Backend: Python + FastAPI + SQLAlchemy)
+==========================================================================
+
+Este archivo es el CONTRATO entre backend y frontend. Los endpoints, los
+nombres de campos y los mensajes de WebSocket son exactamente estos.
+Si el frontend necesita algo que no esta aqui, se agrega primero en este
+archivo (avisando al grupo) y despues se programa. Nadie inventa rutas.
+
+Nombres de tablas, funciones, vistas y codigos de error: ver roadmap_bd.txt.
+
+--------------------------------------------------------------------------
+ 0. REGLAS GENERALES
+--------------------------------------------------------------------------
+- La logica del negocio vive en PostgreSQL. El backend NO calcula envio,
+  totales, IVA, IGTF, comisiones, distancias, asignaciones, facturas ni
+  promedios. Llama a las
+  funciones de la BD:
+      db.execute(text("SELECT fn_crear_pedido(:c, :r, :d, CAST(:p AS JSONB), :pr, :m, :u4)"), {...})
+- El backend NUNCA hace UPDATE directo a pedido.id_estado: usa fn_cambiar_estado.
+- SQLAlchemy se usa para la conexion y para lecturas y altas simples
+  (catalogos, productos, direcciones). Nada de crear tablas desde Python:
+  las tablas salen de los scripts SQL.
+- Se conecta con el rol de_app, nunca con postgres.
+- Consultas siempre parametrizadas (:parametro), nunca f-strings con SQL.
+- Los nombres de campos del JSON son los mismos nombres de las columnas de
+  la BD y de las vistas (snake_case). No se traducen ni se renombran.
+- Puerto del backend: 8000. Prefijo de todas las rutas: /api
+- Formato de error (siempre este):
+      HTTP 400  {"error": "CODIGO", "mensaje": "texto para mostrar"}
+      HTTP 401  {"error": "NO_AUTENTICADO", "mensaje": "..."}
+      HTTP 403  {"error": "SIN_PERMISO", "mensaje": "..."}
+      HTTP 404  {"error": "NO_ENCONTRADO", "mensaje": "..."}
+  Los errores de la BD llegan como "CODIGO: descripcion". Un manejador
+  global captura sqlalchemy.exc.DBAPIError, separa el CODIGO y responde 400.
+  Si no trae codigo: 500 {"error": "ERROR_INTERNO", "mensaje": "..."}.
+
+--------------------------------------------------------------------------
+ 1. ESTRUCTURA DEL PROYECTO
+--------------------------------------------------------------------------
+backend/
+  requirements.txt
+  .env.ejemplo              (se sube; el .env real NO se sube)
+  app/
+    main.py                 crea la app, CORS, routers, arranca listener y tareas
+    config.py               lee el .env
+    db.py                   engine y sesion de SQLAlchemy
+    seguridad.py            JWT y dependencia requiere_rol(...)
+    errores.py              manejador global de errores de la BD
+    esquemas.py             modelos Pydantic de entrada
+    routers/
+      auth.py
+      publico.py
+      cliente.py
+      restaurante.py
+      repartidor.py
+      coordinador.py
+      admin.py
+      facturas.py           facturas, notas de credito, libro de ventas, liquidaciones
+      ws.py                 endpoint WebSocket y gestor de conexiones
+    tiempo_real/
+      listener.py           LISTEN a los canales de PostgreSQL
+    tareas/
+      expirar_ofertas.py    llama fn_expirar_ofertas() cada 30 s
+  simulador/
+    simulador.py            mueve repartidores (ver seccion 7)
+
+requirements.txt:
+  fastapi
+  uvicorn[standard]
+  sqlalchemy>=2.0
+  psycopg[binary]>=3.1      (driver de SQLAlchemy y LISTEN asincrono)
+  pyjwt
+  python-dotenv
+  pydantic
+  (Las contrasenias las cifra la BD con pgcrypto: no se usa passlib.)
+
+.env.ejemplo:
+  DATABASE_URL=postgresql+psycopg://de_app:CLAVE@localhost:5432/deliverexpress
+  LISTEN_URL=postgresql://de_app:CLAVE@localhost:5432/deliverexpress
+  JWT_SECRET=cambiar_esto
+  JWT_EXPIRA_MIN=480
+  CORS_ORIGINS=http://localhost:5173
+
+En db.py, cada conexion debe usar el esquema:
+  connect_args={"options": "-c search_path=deliverexpress"}
+
+--------------------------------------------------------------------------
+ 2. AUTENTICACION
+--------------------------------------------------------------------------
+- Login con fn_login(email, password). Si no devuelve filas: 401.
+- Token JWT con: sub (id_usuario), rol, id_perfil, nombre, exp.
+- El frontend manda:  Authorization: Bearer <token>
+- Dependencia requiere_rol("cliente"), requiere_rol("coordinador", "admin"), etc.
+- Reglas de propiedad (403 si no se cumple):
+    cliente     solo ve y califica SUS pedidos y SUS direcciones
+    restaurante solo ve y cambia pedidos de SU restaurante
+    repartidor  solo ve SUS ofertas y los pedidos asignados a el
+- Usuarios de prueba: ver roadmap_bd.txt seccion 11 (contrasenia demo1234).
+
+--------------------------------------------------------------------------
+ 3. FORMA DEL PEDIDO (respuesta comun)
+--------------------------------------------------------------------------
+Todos los endpoints que devuelven "un pedido completo" usan esta forma:
+
+{
+  "id_pedido": 15,
+  "id_estado": 4,
+  "estado_codigo": "en_camino",
+  "estado_nombre": "En camino",
+  "fecha_creacion": "2026-10-10T19:32:00-04:00",
+  "subtotal": 12.00, "costo_envio": 2.50, "propina": 1.00,
+  "iva_total": 2.32, "igtf": 0.53, "total": 18.35,
+  "moneda_pago": "USD", "tasa_bcv_aplicada": 36.5000, "total_ves": 669.78,
+  "id_factura": null,            (se llena cuando el pedido se entrega)
+  "distancia_km": 3.20,
+  "tiempo_estimado_min": 28,
+  "motivo_cancelacion": null,
+  "restaurante": {"id_restaurante": 3, "nombre": "...", "telefono": "...",
+                  "latitud": 8.29, "longitud": -62.74},
+  "cliente":     {"id_cliente": 7, "nombre": "...", "telefono": "..."},
+  "direccion":   {"id_direccion": 9, "direccion": "...", "referencia": "...",
+                  "latitud": 8.30, "longitud": -62.72},
+  "repartidor":  null  o  {"id_repartidor": 5, "nombre": "...", "telefono": "...",
+                  "tipo_vehiculo": "moto", "calificacion_promedio": 4.60,
+                  "latitud_actual": 8.29, "longitud_actual": -62.73},
+  "detalle":     [{"id_producto": 1, "nombre": "...", "cantidad": 2,
+                   "precio_unitario": 6.00, "subtotal": 12.00}],
+  "historial":   [{"id_estado": 1, "estado_codigo": "recibido",
+                   "estado_nombre": "Recibido", "fecha_hora": "..."}],
+  "calificaciones_hechas": ["cliente_a_repartidor"]
+}
+
+Numeros de dinero y coordenadas se devuelven como numero (float), no texto.
+Fechas en formato ISO 8601 con zona horaria.
+
+--------------------------------------------------------------------------
+ 4. ENDPOINTS
+--------------------------------------------------------------------------
+Formato: METODO  RUTA  [rol]  -> que llama en la BD  |  cuerpo  |  respuesta
+
+AUTH (routers/auth.py)
+  POST /api/auth/registro-cliente  [publico] -> fn_registrar_cliente
+       {email, password, nombre, telefono, cedula_rif (opcional)} | {id_cliente}
+  POST /api/auth/login             [publico] -> fn_login
+       {email, password} | {token, rol, id_perfil, nombre}
+  GET  /api/auth/yo                [cualquiera] | {id_usuario, rol, id_perfil, nombre}
+
+PUBLICO (routers/publico.py)
+  GET  /api/categorias   | [{id_categoria, nombre}]
+  GET  /api/zonas        | [{id_zona, nombre, latitud_centro, longitud_centro}]
+
+CLIENTE (routers/cliente.py)  [cliente]
+  GET  /api/cliente/direcciones
+       | [{id_direccion, id_zona, zona, direccion, referencia, latitud, longitud, principal}]
+  POST /api/cliente/direcciones
+       {id_zona, direccion, referencia, latitud, longitud, principal} | {id_direccion}
+  GET  /api/cliente/restaurantes?id_direccion=9&id_categoria=2   (categoria opcional)
+       Restaurantes activos que cubren la zona de esa direccion.
+       -> fn_restaurante_disponible, fn_distancia_km, fn_costo_envio
+       | [{id_restaurante, nombre, categoria, direccion, calificacion_promedio,
+           tiempo_prep_min, abierto_ahora, distancia_km, costo_envio}]
+  GET  /api/cliente/restaurantes/{id}
+       | {id_restaurante, nombre, categoria, direccion, telefono,
+          calificacion_promedio, tiempo_prep_min,
+          horario: [{dia_semana, hora_apertura, hora_cierre}]}
+  GET  /api/cliente/restaurantes/{id}/productos
+       | [{id_producto, nombre, descripcion, precio, exento_iva}]   (solo disponibles)
+  POST /api/cliente/pedidos/cotizar -> fn_cotizar_pedido (no guarda nada)
+       {id_restaurante, id_direccion, productos: [{id_producto, cantidad}],
+        propina, moneda_pago: "USD" | "VES"}
+       | {distancia_km, subtotal, costo_envio, propina, iva_total, igtf,
+          total, tasa_bcv, total_ves}
+  POST /api/cliente/pedidos        -> fn_crear_pedido
+       {id_restaurante, id_direccion,
+        productos: [{id_producto, cantidad}], propina, moneda_pago, ultimos4}
+       | pedido completo (seccion 3)
+  GET  /api/cliente/pedidos
+       | [{id_pedido, fecha_creacion, restaurante, estado_codigo, estado_nombre, total}]
+  GET  /api/cliente/pedidos/{id}   | pedido completo
+  PUT  /api/cliente/datos-fiscales  {cedula_rif}   (para que salga en sus facturas)
+  POST /api/cliente/pedidos/{id}/calificar   -> fn_calificar
+       {tipo: "cliente_a_repartidor" | "cliente_a_restaurante", puntaje, comentario}
+       | {id_calificacion}
+  GET  /api/cliente/recomendaciones   -> vw_recomendaciones_cliente (ranking <= 5)
+       | [{id_producto, producto, id_restaurante, restaurante, categoria, veces_pedido}]
+
+RESTAURANTE (routers/restaurante.py)  [restaurante]
+  GET  /api/restaurante/pedidos?activos=true   (activos=false: historial)
+       | [pedido completo]
+  POST /api/restaurante/pedidos/{id}/aceptar   -> fn_cambiar_estado(id, 2, usuario)
+  POST /api/restaurante/pedidos/{id}/listo     -> fn_cambiar_estado(id, 3, usuario)
+  POST /api/restaurante/pedidos/{id}/cancelar  -> fn_cambiar_estado(id, 6, usuario, motivo)
+       {motivo}
+       (los tres responden el pedido completo actualizado)
+  GET  /api/restaurante/productos   | [{id_producto, nombre, descripcion, precio, exento_iva, disponible}]
+  POST /api/restaurante/productos   {nombre, descripcion, precio, exento_iva} | {id_producto}
+  PUT  /api/restaurante/productos/{id}   {nombre, descripcion, precio, exento_iva, disponible}
+  GET  /api/restaurante/horarios    | [{dia_semana, hora_apertura, hora_cierre}]
+  PUT  /api/restaurante/horarios    [{dia_semana, hora_apertura, hora_cierre}]
+       (reemplaza el horario completo)
+  GET  /api/restaurante/facturas    -> vw_facturas (sus facturas de comision y notas de credito)
+
+REPARTIDOR (routers/repartidor.py)  [repartidor]
+  GET  /api/repartidor/yo
+       | {id_repartidor, nombre, tipo_vehiculo, disponibilidad, prioridad,
+          calificacion_promedio, en_revision}
+  PUT  /api/repartidor/disponibilidad  {disponibilidad: "libre" | "desconectado"}
+       (no se permite si esta 'ocupado')
+  GET  /api/repartidor/oferta-pendiente
+       | null o {id_oferta, fecha_oferta, segundos_restantes, distancia_km,
+                 pedido: pedido completo}
+  POST /api/repartidor/ofertas/{id}/responder  -> fn_responder_oferta
+       {acepta: true | false} | {ok: true}
+  GET  /api/repartidor/pedido-actual   | null o pedido completo
+  POST /api/repartidor/pedidos/{id}/retirado   -> fn_cambiar_estado(id, 4, usuario)
+  POST /api/repartidor/pedidos/{id}/entregado  -> fn_cambiar_estado(id, 5, usuario)
+  POST /api/repartidor/ubicacion       -> fn_registrar_ubicacion
+       {latitud, longitud} | {ok: true}
+  POST /api/repartidor/pedidos/{id}/calificar  -> fn_calificar(id, 'repartidor_a_cliente', ...)
+       {puntaje, comentario}
+  GET  /api/repartidor/historial
+       | [{id_pedido, fecha_creacion, restaurante, costo_envio, propina, estado_codigo}]
+  GET  /api/repartidor/liquidaciones
+       | [{id_liquidacion, numero, periodo_desde, periodo_hasta, viajes,
+           total_envios, total_propinas, total, fecha_emision}]
+
+COORDINADOR (routers/coordinador.py)  [coordinador, admin]
+  GET  /api/coordinador/pedidos-activos        -> vw_pedidos_activos
+  GET  /api/coordinador/repartidores
+       Todos los repartidores activos (libres, ocupados y desconectados)
+       | [{id_repartidor, nombre, zona, tipo_vehiculo, disponibilidad, prioridad,
+           calificacion_promedio, latitud_actual, longitud_actual, en_revision}]
+  POST /api/coordinador/pedidos/{id}/reasignar -> fn_reasignar_pedido
+       {id_repartidor: 5 | null}
+  POST /api/coordinador/pedidos/{id}/cancelar  -> fn_cambiar_estado(id, 6, usuario, motivo)
+       {motivo}
+  GET  /api/coordinador/pedidos/{id}           | pedido completo
+  GET  /api/coordinador/reportes/tiempos?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+       -> vw_tiempos_por_etapa
+  GET  /api/coordinador/reportes/restaurantes  -> vw_desempeno_restaurantes
+  GET  /api/coordinador/reportes/repartidores  -> vw_desempeno_repartidores
+  GET  /api/coordinador/reportes/liquidacion?desde=...&hasta=...  -> vw_liquidacion
+  GET  /api/coordinador/revision
+       | {clientes: [{id_cliente, nombre, calificacion_promedio, total_calificaciones}],
+          repartidores: [{id_repartidor, nombre, calificacion_promedio, total_calificaciones}]}
+
+FACTURACION (routers/facturas.py)
+  GET  /api/facturas/{id}   [cliente o restaurante duenio, coordinador, admin]
+       | {todas las columnas de la tabla factura, numero_factura_afectada,
+          detalle: [{descripcion, cantidad, precio_unitario, alicuota_iva,
+                     no_sujeto, base_item, iva_item, subtotal_item}]}
+  GET  /api/coordinador/facturas?tipo=&desde=&hasta=  [coordinador, admin] -> vw_facturas
+  POST /api/coordinador/facturas/{id}/anular  {motivo}  -> fn_anular_factura
+       | {id_factura}   (id de la nota de credito creada)
+  GET  /api/coordinador/libro-ventas?desde=&hasta=    -> vw_libro_ventas
+  GET  /api/coordinador/resumen-iva                   -> vw_resumen_iva_mensual
+  GET  /api/coordinador/liquidaciones?desde=&hasta=   -> liquidacion_repartidor
+  POST /api/admin/facturacion/comisiones    {desde, hasta}  [admin]
+       -> fn_generar_facturas_comision | {creadas: N}
+  POST /api/admin/facturacion/liquidaciones {desde, hasta}  [admin]
+       -> fn_generar_liquidaciones     | {creadas: N}
+
+ADMIN (routers/admin.py)  [admin]
+  GET/POST/PUT /api/admin/zonas            (PUT /api/admin/zonas/{id})
+  GET/POST/PUT /api/admin/categorias
+  GET/POST/PUT /api/admin/tarifas
+  GET/PUT      /api/admin/parametros       (PUT /api/admin/parametros/{clave} {valor})
+  GET  /api/admin/tasas-bcv   | [{fecha, tasa_usd, fecha_registro}]  (ultimas 60)
+  POST /api/admin/tasas-bcv   {fecha, tasa_usd}   (si ya existe esa fecha: 400)
+  GET  /api/admin/restaurantes
+  POST /api/admin/restaurantes
+       {email, password, nombre, id_categoria, direccion, telefono, latitud,
+        longitud, tiempo_prep_min, rif, razon_social, direccion_fiscal,
+        zonas: [id_zona, ...]}
+       -> fn_registrar_usuario(email, password, 'restaurante') + INSERT restaurante
+          + INSERT restaurante_zona, en UNA transaccion
+  PUT  /api/admin/restaurantes/{id}        (mismos campos sin email/password + activo)
+  GET  /api/admin/repartidores
+  POST /api/admin/repartidores
+       {email, password, nombre, telefono, cedula, tipo_vehiculo, id_zona}
+  PUT  /api/admin/repartidores/{id}        {nombre, telefono, cedula, tipo_vehiculo, id_zona, activo}
+  POST /api/admin/coordinadores            {email, password, nombre, telefono}
+  PUT  /api/admin/usuarios/{id}/activo     {activo}
+
+Documentacion automatica en http://localhost:8000/docs (se usa para probar).
+
+--------------------------------------------------------------------------
+ 5. TIEMPO REAL
+--------------------------------------------------------------------------
+tiempo_real/listener.py
+  Al arrancar la app, abre UNA conexion asincrona de psycopg (LISTEN_URL) y hace:
+     LISTEN canal_pedidos; LISTEN canal_ofertas; LISTEN canal_ubicaciones;
+  Lee las notificaciones con conn.notifies() y las pasa al gestor de WebSockets.
+  Si la conexion se cae, reintenta cada 5 s.
+
+routers/ws.py
+  WebSocket:  ws://localhost:8000/ws?token=<JWT>
+  Token invalido: cerrar la conexion con codigo 4401.
+  El gestor guarda las conexiones abiertas por (rol, id_perfil).
+
+Mensaje que recibe el frontend (siempre esta forma):
+  {"tipo": "pedido" | "oferta" | "ubicacion", "datos": { ...json del canal... }}
+  Los "datos" son exactamente el JSON que manda la BD (roadmap_bd.txt seccion 7).
+
+A quien se envia cada mensaje:
+  canal_pedidos      -> tipo "pedido"
+                        todos los coordinadores y admin
+                        + el restaurante con id_perfil = id_restaurante
+                        + el cliente con id_perfil = id_cliente
+                        + el repartidor con id_perfil = id_repartidor (si no es null)
+  canal_ofertas      -> tipo "oferta"
+                        el repartidor con id_perfil = id_repartidor
+                        + todos los coordinadores y admin
+  canal_ubicaciones  -> tipo "ubicacion"
+                        todos los coordinadores y admin
+                        + el cliente con id_perfil = id_cliente (si no es null)
+                        + el restaurante con id_perfil = id_restaurante (si no es null)
+
+El mensaje solo AVISA. El frontend, al recibir "pedido", vuelve a pedir los
+datos por la API. Con "ubicacion" mueve el marcador directamente.
+
+--------------------------------------------------------------------------
+ 6. TAREA PERIODICA
+--------------------------------------------------------------------------
+tareas/expirar_ofertas.py
+  Al arrancar, lanza una tarea asyncio que cada 30 s ejecuta:
+     SELECT fn_expirar_ofertas();
+  (expira ofertas vencidas y reintenta asignar pedidos sin repartidor)
+
+--------------------------------------------------------------------------
+ 7. SIMULADOR DE REPARTIDORES
+--------------------------------------------------------------------------
+simulador/simulador.py  (se ejecuta aparte:  python simulador.py)
+  Se conecta a la BD con de_app y cada 3 segundos, para cada repartidor
+  que no este 'desconectado':
+    - Con pedido en estado 2 o 3: avanza un paso hacia el restaurante.
+    - Con pedido en estado 4: avanza un paso hacia la direccion del cliente.
+    (al entregar, la BD crea la factura sola: el simulador no hace nada extra)
+    - Libre: se mueve un poco al azar dentro de su zona.
+  Cada movimiento se guarda con  SELECT fn_registrar_ubicacion(:id, :lat, :lon)
+  (el trigger avisa al mapa solo).
+  Tamanio del paso segun vehiculo: usar velocidad_*_kmh de parametro_sistema.
+  Opcion --auto (para la "pantalla con pedidos volando"):
+    - acepta las ofertas pendientes con fn_responder_oferta(id, true)
+    - al llegar al restaurante en estado 3 llama fn_cambiar_estado(id, 4, NULL)
+    - al llegar al cliente llama fn_cambiar_estado(id, 5, NULL)
+  Opcion --pedidos N: crea N pedidos al azar con fn_crear_pedido (moneda USD o
+    VES al azar) y los acepta
+    como restaurante (estado 2) para llenar el panel.
+
+--------------------------------------------------------------------------
+ 8. ORDEN DE TRABAJO (fases del documento)
+--------------------------------------------------------------------------
+FASE 1 - Diseno
+  [ ] Revisar este archivo con el grupo, sobre todo con los dos del frontend
+  [ ] Confirmar que roadmap_bd.txt tiene todo lo que el backend va a llamar
+
+FASE 2 - Esqueleto (mientras la BD se construye)
+  [ ] Proyecto FastAPI con la estructura de la seccion 1
+  [ ] config.py, db.py con search_path, CORS para http://localhost:5173
+  [ ] errores.py con el formato de error unico
+  [ ] seguridad.py: JWT y requiere_rol
+  [ ] auth.py funcionando con fn_login (en cuanto la BD la tenga)
+  [ ] Ayudar al integrante 1 con 10_datos_prueba.sql
+
+FASE 3 - API (en paralelo con las funciones de la BD)
+  [ ] publico.py y cliente.py
+  [ ] restaurante.py
+  [ ] repartidor.py
+  [ ] coordinador.py
+  [ ] admin.py (incluye tasas BCV)
+  [ ] facturas.py (facturas, anular, libro de ventas, comisiones, liquidaciones)
+  [ ] Probar cada endpoint en /docs con los usuarios de prueba
+  [ ] Reportar al integrante 2 cualquier error de las funciones SQL
+  Meta de la fase: un pedido recorre los 5 estados solo usando la API y al
+  entregarse aparece su factura en GET /api/facturas/{id}.
+
+FASE 4 - Tiempo real e integracion
+  [ ] listener.py + ws.py (probar con un cliente WebSocket o la consola del navegador)
+  [ ] expirar_ofertas.py
+  [ ] simulador.py con --auto y --pedidos
+  [ ] Acompaniar a los del frontend a conectar cada pantalla
+
+FASE 5 - Cierre
+  [ ] README del backend: instalar, crear .env, ejecutar uvicorn y el simulador
+  [ ] Lista de endpoints para el documento (seccion 10)
+  [ ] Ensayo de la demo completa en la PC de la presentacion
