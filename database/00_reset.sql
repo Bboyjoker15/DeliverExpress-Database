@@ -1,6 +1,5 @@
 -- ==========================================================================
 -- DeliverExpress - 00_reset.sql
--- Integrante 1
 -- Reinicia el esquema desde cero. Siempre el primero en ejecutar_todo.sql.
 -- roadmap_bd.txt seccion 0 y 2.
 -- ==========================================================================

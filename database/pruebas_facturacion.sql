@@ -1,6 +1,5 @@
 -- ==========================================================================
 -- DeliverExpress - pruebas_facturacion.sql
--- Integrante 1
 -- Pruebas manuales de facturacion (roadmap_bd.txt seccion 13). NO entra en
 -- ejecutar_todo.sql. Ejecutar sobre una base ya cargada con
 -- 10_datos_prueba.sql y revisar cada resultado contra lo que dice el

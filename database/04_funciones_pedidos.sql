@@ -1,10 +1,8 @@
 -- ==========================================================================
 -- DeliverExpress - 04_funciones_pedidos.sql
--- Integrante 1 (asumido: el Integrante 2 no se presento al equipo).
--- Funciones de pedidos originalmente asignadas al Integrante 2
--- (roadmap_bd.txt seccion 6). Verificado contra el backend ya construido
--- (DeliverExpress-backend): nombres de funcion, orden de parametros y
--- columnas devueltas coinciden exactamente con lo que llaman los routers.
+-- Funciones de pedidos: cotizar, crear, cambiar de estado, asignar
+-- repartidor, responder ofertas, expirar ofertas, reasignar y registrar
+-- ubicacion. roadmap_bd.txt seccion 6.
 -- ==========================================================================
 SET search_path TO deliverexpress;
 

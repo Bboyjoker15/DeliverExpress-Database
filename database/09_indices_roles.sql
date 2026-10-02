@@ -1,6 +1,5 @@
 -- ==========================================================================
 -- DeliverExpress - 09_indices_roles.sql
--- Integrante 1
 -- Indices, funciones de registro/login y roles de PostgreSQL.
 -- roadmap_bd.txt seccion 10. Requiere ejecutarse con un rol que pueda crear
 -- roles y reasignar el dueño del esquema (postgres o un rol CREATEROLE).

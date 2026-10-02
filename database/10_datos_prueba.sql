@@ -1,20 +1,13 @@
 -- ==========================================================================
 -- DeliverExpress - 10_datos_prueba.sql
--- Integrante 1 (+ 3)
 -- Datos de prueba: usuarios reales del cliente (20 restaurantes, 35
--- repartidores, 3 coordinadores -- cifras reales segun el PDF del proyecto,
--- no se tocan -- y 67 clientes, un tercio mas de los 50 del contrato
--- original), tasas BCV, ~667 pedidos historicos de los ultimos 60 dias (un
--- tercio mas de los ~500 iniciales) con historial, ofertas, calificaciones
--- y facturas, facturas de comision, liquidaciones, un par de notas de
--- credito, y ~10 pedidos activos para la demo. Nombres, direcciones y menus
--- generados con variedad real (nombres venezolanos, calles y sectores de
--- Puerto Ordaz) en vez de placeholders tipo "Cliente 1". roadmap_bd.txt
--- seccion 11.
---
--- NOTA: este script genera datos ALEATORIOS dentro de reglas de negocio
--- validas. Si al ejecutarlo aparece algun error, revisenlo entre los dos:
--- probablemente hace falta ajustar un rango aleatorio o un caso limite.
+-- repartidores, 3 coordinadores) y 67 clientes, tasas BCV, ~667 pedidos
+-- historicos de los ultimos 60 dias con historial, ofertas, calificaciones
+-- y facturas, facturas de comision, liquidaciones, notas de credito, y ~10
+-- pedidos activos para la demo. Nombres, direcciones y menus con variedad
+-- real (nombres venezolanos, calles y sectores de Puerto Ordaz).
+-- roadmap_bd.txt seccion 11. Los datos se generan de forma aleatoria dentro
+-- de las reglas de negocio validas.
 -- ==========================================================================
 SET search_path TO deliverexpress;
 
@@ -200,7 +193,7 @@ BEGIN
     END LOOP;
 END $$;
 
--- Clientes (67: los 50 originales del contrato + un tercio mas), 1 o 2
+-- Clientes (67), 1 o 2
 -- direcciones cada uno, mitad con cedula_rif
 DO $$
 DECLARE

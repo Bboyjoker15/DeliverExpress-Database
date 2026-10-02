@@ -1,11 +1,10 @@
 -- ==========================================================================
 -- DeliverExpress - 05_triggers_pedidos.sql
--- Integrante 1 (asumido: el Integrante 2 no se presento al equipo).
--- Triggers de pedidos originalmente asignados al Integrante 2
--- (roadmap_bd.txt seccion 7). Los nombres de canales y campos del JSON son
--- CONTRATO con el backend: verificado contra tiempo_real/listener.py y
--- routers/ws.py de DeliverExpress-backend, que ya leen exactamente estos
--- canales (canal_pedidos/canal_ofertas/canal_ubicaciones) y estos campos.
+-- Triggers de pedidos: transicion de estados, historial, liberar
+-- repartidor, mismo restaurante por pedido, y notificaciones en tiempo real
+-- con pg_notify. roadmap_bd.txt seccion 7. Los nombres de canal
+-- (canal_pedidos/canal_ofertas/canal_ubicaciones) y los campos del JSON son
+-- el contrato con el backend.
 -- ==========================================================================
 SET search_path TO deliverexpress;
 

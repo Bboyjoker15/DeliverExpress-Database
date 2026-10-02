@@ -1,8 +1,7 @@
 -- ==========================================================================
 -- DeliverExpress - 07_vistas.sql
--- Integrante 1
--- Las 7 vistas de negocio (roadmap_bd.txt seccion 9). Las columnas listadas
--- son CONTRATO con el backend: mismos nombres, no se renombran sin avisar.
+-- Las 7 vistas de negocio para los paneles de coordinadores, reportes de
+-- desempeño y recomendaciones. roadmap_bd.txt seccion 9.
 -- ==========================================================================
 SET search_path TO deliverexpress;
 

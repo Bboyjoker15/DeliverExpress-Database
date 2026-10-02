@@ -1,7 +1,6 @@
 -- ==========================================================================
 -- DeliverExpress - pruebas_funciones.sql
--- Integrante 1 (asumido: el Integrante 2 no se presento al equipo).
--- Pruebas de las funciones de 03-06, originalmente a cargo del Integrante 2
+-- Pruebas de las funciones de logistica, pedidos, pagos y calificaciones
 -- (roadmap_bd.txt seccion 13). NO entra en ejecutar_todo.sql. Ejecutar sobre
 -- una base ya cargada con 10_datos_prueba.sql.
 -- ==========================================================================

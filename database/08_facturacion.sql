@@ -1,6 +1,5 @@
 -- ==========================================================================
 -- DeliverExpress - 08_facturacion.sql
--- Integrante 1
 -- Facturas al cliente, de comision, notas de credito, liquidaciones de
 -- repartidor, inmutabilidad y vistas de facturacion. roadmap_bd.txt §8b.
 -- Fuera de alcance: retenciones de IVA/ISLR, libro de compras, autorizacion

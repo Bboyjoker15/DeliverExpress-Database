@@ -1,9 +1,8 @@
 -- ==========================================================================
 -- DeliverExpress - 03_funciones_logistica.sql
--- Integrante 1 (asumido: el Integrante 2 no se presento al equipo).
--- Funciones de logistica originalmente asignadas al Integrante 2
--- (roadmap_bd.txt seccion 5). Verificado contra el backend ya construido
--- (DeliverExpress-backend): nombres de funcion y parametros coinciden.
+-- Funciones de logistica: distancia (Haversine), costo de envio,
+-- disponibilidad del restaurante, tasa BCV y tiempo estimado de entrega.
+-- roadmap_bd.txt seccion 5.
 -- ==========================================================================
 SET search_path TO deliverexpress;
 

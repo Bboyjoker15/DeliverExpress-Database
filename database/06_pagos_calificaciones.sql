@@ -1,8 +1,8 @@
 -- ==========================================================================
 -- DeliverExpress - 06_pagos_calificaciones.sql
--- Integrante 1 (asumido: el Integrante 2 no se presento al equipo).
--- Pagos y calificaciones originalmente asignados al Integrante 2
--- (roadmap_bd.txt seccion 8). El pago se inserta dentro de fn_crear_pedido
+-- Calificaciones cruzadas, calculo de promedio, marcado en revision y
+-- prioridad del repartidor segun su tasa de rechazo. roadmap_bd.txt
+-- seccion 8. El pago se inserta dentro de fn_crear_pedido
 -- (04_funciones_pedidos.sql): no hay otra forma de crear pagos.
 -- ==========================================================================
 SET search_path TO deliverexpress;

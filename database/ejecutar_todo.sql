@@ -1,8 +1,7 @@
 -- ==========================================================================
 -- DeliverExpress - ejecutar_todo.sql
--- Integrante 1
--- Reconstruye la base de datos completa desde cero, en orden. Antes de subir
--- a GitHub: correr este script sin errores (roadmap_bd.txt seccion 0).
+-- Reconstruye la base de datos completa desde cero, en orden
+-- (roadmap_bd.txt seccion 0).
 --
 -- Ejecutar conectado a la base de datos "deliverexpress" con un rol que
 -- pueda crear roles y reasignar el dueño del esquema (por ejemplo postgres):

@@ -1,10 +1,8 @@
 -- ==========================================================================
 -- DeliverExpress - 01_esquema_tablas.sql
--- Integrante 1
 -- Las 27 tablas del esquema (21 de nucleo + 6 de facturacion), en orden de
 -- dependencia de FK. Nombres, tipos y restricciones = contrato de
--- roadmap_bd.txt seccion 3 (nucleo) y seccion 8b (facturacion). No renombrar
--- nada sin avisar al grupo.
+-- roadmap_bd.txt seccion 3 (nucleo) y seccion 8b (facturacion).
 -- ==========================================================================
 SET search_path TO deliverexpress;
 

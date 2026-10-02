@@ -1,9 +1,8 @@
 -- ==========================================================================
 -- DeliverExpress - 02_catalogos.sql
--- Integrante 1
 -- Datos de catalogo: estados, parametros, correlativo, tarifas, categorias
--- y zonas. roadmap_bd.txt seccion 4. Estos valores son CONTRATO: el backend
--- y el frontend asumen exactamente estos codigos, claves e IDs.
+-- y zonas. roadmap_bd.txt seccion 4. Estos valores son el contrato que
+-- asumen el backend y el frontend: mismos codigos, claves e IDs.
 -- ==========================================================================
 SET search_path TO deliverexpress;
 
